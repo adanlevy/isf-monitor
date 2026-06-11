@@ -591,7 +591,8 @@
   <button class="sheet-form-btn" onclick="openForm()">📝 Abrir formulario de donación</button>
 
   <div class="btn-row" style="margin-top:12px">
-    <button class="btn btn-ghost" onclick="capDisconnect()">✕ Detener transmisión</button>
+    <button class="btn btn-ghost" onclick="goFullscreen()">⛶ Pantalla completa</button>
+    <button class="btn btn-ghost" onclick="capDisconnect()">✕ Detener</button>
   </div>
   <button class="sheet-close" onclick="closeSheet()">↩ Volver a la pantalla del donante</button>
 </div>
@@ -629,17 +630,35 @@ let audCtx     = null;
 let resetTmr   = null;
 let pendingAudio = null;
 let formLoaded = false;
+let capCode    = '';
+let reconnTries = 0;
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
 // ══════════════════════════════════════════════════════════════
 //  PEGÁ ACÁ la URL de tu presentación de Google Slides.
-//  Cómo obtenerla: en Slides → Archivo → Compartir → Publicar en
-//  la web → pestaña "Insertar" → copiá solo el enlace que está
-//  dentro de src="...". Debe terminar en /embed?...
+//  En Slides → Archivo → Compartir → Publicar en la web → "Insertar"
+//  → copiá solo el enlace dentro de src="..." (termina en /embed?...)
 //  Si lo dejás vacío (''), se muestra el cartel de marca de respaldo.
-// ══════════════════════════════════════════════════════════════
 const SLIDES_URL = '';
+
+// ══════════════════════════════════════════════════════════════
+//  SERVIDORES ICE (STUN + TURN)
+//  Los STUN solos NO alcanzan en redes de celular: hace falta TURN.
+//  Conseguí credenciales TURN GRATIS (5 min, sin tarjeta) en:
+//    • https://www.expressturn.com   (1000 GB/mes gratis)
+//    • https://www.metered.ca        (plan gratuito)
+//  y reemplazá el bloque TURN de abajo con los datos que te den.
+//  Las credenciales "openrelay" son solo para pruebas rápidas y
+//  pueden dejar de funcionar sin aviso.
+// ══════════════════════════════════════════════════════════════
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'turn:openrelay.metered.ca:80',               username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443',              username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+];
 
 const $ = id => document.getElementById(id);
 
@@ -662,6 +681,8 @@ function goBack() {
 }
 
 function teardown() {
+  clearTimeout(resetTmr); resetTmr = null;
+  reconnTries = 0;
   peer?.destroy();  peer = null;
   lstream?.getTracks().forEach(t => t.stop()); lstream = null;
   if (recorder?.state !== 'inactive') recorder?.stop();
@@ -735,6 +756,19 @@ function loadSlides() {
   }
 }
 
+function goFullscreen() {
+  const el = document.documentElement;
+  const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
+  if (fn) { try { fn.call(el); } catch (_) {} }
+}
+
+function exitFullscreen() {
+  const fn = document.exitFullscreen || document.webkitExitFullscreen;
+  if (fn && (document.fullscreenElement || document.webkitFullscreenElement)) {
+    try { fn.call(document); } catch (_) {}
+  }
+}
+
 /* ═══════════════════════════════════════════════
    COORDINATOR
 ═══════════════════════════════════════════════ */
@@ -748,11 +782,7 @@ function initCoord() {
 
 function spawnCoordPeer(code) {
   peer = new Peer('isfa' + code, {
-    config: { iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun.stunprotocol.org:3478' }
-    ]}
+    config: { iceServers: ICE_SERVERS }
   });
 
   peer.on('open', () => setCS('wait', 'Esperando al captador/a...'));
@@ -914,6 +944,11 @@ async function capConnect() {
     return;
   }
 
+  // Request fullscreen NOW, while we still have the tap gesture
+  goFullscreen();
+  capCode = code;
+  reconnTries = 0;
+
   $('cap-btn').disabled = true;
 
   // HTTPS check
@@ -946,44 +981,12 @@ async function capConnect() {
   go('s-donor');
 
   peer = new Peer({
-    config: { iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun.stunprotocol.org:3478' }
-    ]}
+    config: { iceServers: ICE_SERVERS }
   });
 
   peer.on('open', () => {
     setSheetStatus('wait', 'Llamando al coordinador...');
-    const call = peer.call('isfa' + code, lstream);
-    let connected = false;
-
-    const t = setTimeout(() => {
-      if (!connected) {
-        connected = true;
-        setSheetStatus('ok', '📡 Transmitiendo en vivo...');
-        startVol(lstream, 'sheet-vol-fill', 'sheet-vol-wrap');
-      }
-    }, 2000);
-
-    call.on('stream', () => {
-      if (!connected) {
-        connected = true;
-        clearTimeout(t);
-        setSheetStatus('ok', '📡 Transmitiendo en vivo...');
-        startVol(lstream, 'sheet-vol-fill', 'sheet-vol-wrap');
-      }
-    });
-
-    call.on('close', () => {
-      clearTimeout(t);
-      setSheetStatus('init', 'Transmisión finalizada.');
-    });
-
-    call.on('error', () => {
-      clearTimeout(t);
-      setSheetStatus('err', 'Error en la transmisión de audio.');
-    });
+    placeCall();
   });
 
   peer.on('error', err => {
@@ -999,8 +1002,59 @@ async function capConnect() {
   });
 }
 
+// Places (or re-places) the call to the coordinator and watches the
+// connection. If the media path drops (common on mobile), it retries.
+function placeCall() {
+  if (!peer || peer.destroyed || !lstream) return;
+
+  const call = peer.call('isfa' + capCode, lstream);
+  let connected = false;
+
+  const markLive = () => {
+    if (connected) return;
+    connected = true;
+    reconnTries = 0;
+    clearTimeout(t);
+    setSheetStatus('ok', '📡 Transmitiendo en vivo...');
+    startVol(lstream, 'sheet-vol-fill', 'sheet-vol-wrap');
+  };
+
+  const t = setTimeout(markLive, 2000);
+  call.on('stream', markLive);
+
+  // Watch the underlying ICE connection for drops
+  const pc = call.peerConnection;
+  if (pc) {
+    pc.oniceconnectionstatechange = () => {
+      const st = pc.iceConnectionState;
+      if (st === 'connected' || st === 'completed') {
+        markLive();
+      } else if (st === 'failed' || st === 'disconnected') {
+        scheduleReconnect();
+      }
+    };
+  }
+
+  call.on('close', () => { clearTimeout(t); scheduleReconnect(); });
+  call.on('error', () => { clearTimeout(t); scheduleReconnect(); });
+}
+
+function scheduleReconnect() {
+  // Only retry while we're still meant to be transmitting
+  if (!peer || peer.destroyed || !lstream) return;
+  if (reconnTries >= 8) {
+    setSheetStatus('err', 'Se perdió la conexión. Tocá "Detener" y reconectá.');
+    return;
+  }
+  reconnTries++;
+  setSheetStatus('wait', 'Reconectando… (intento ' + reconnTries + ')');
+  clearTimeout(resetTmr);
+  resetTmr = setTimeout(placeCall, 1500);
+}
+
 function capDisconnect() {
   closeSheet();
+  exitFullscreen();
   teardown();
   go('s-cap');
   resetCapForm();
