@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>ISF Argentina · Monitor de Captación</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.4.7/peerjs.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --ink:      #0D1B2A;
+      --blue:     #005FAA;
+      --blue-d:   #004480;
+      --blue-lt:  #E0EEFF;
+      --green:    #1A8F56;
+      --green-lt: #E0F5EC;
+      --red:      #C0392B;
+      --red-lt:   #FDECEA;
+      --amber:    #C77B00;
+      --amber-lt: #FEF3DC;
+      --bg:       #F0F4F8;
+      --card:     #FFFFFF;
+      --muted:    #4F6070;
+      --border:   #C8D8E8;
+      --shadow:   0 3px 20px rgba(0,30,70,.10);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100dvh;
+    }
+
+    /* ─── SCREENS ─────────────────────────────────────── */
+    .screen {
+      display: none;
+      flex-direction: column;
+      min-height: 100dvh;
+      padding: 22px 18px 40px;
+      max-width: 560px;
+      margin: 0 auto;
+    }
+    .screen.on { display: flex; }
+
+    /* ─── APP HEADER ──────────────────────────────────── */
+    .app-hdr {
+      display: flex; align-items: center; gap: 13px;
+      margin-bottom: 28px;
+    }
+    .app-icon {
+      width: 44px; height: 44px; border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 21px; flex-shrink: 0;
+    }
+    .ic-blue  { background: var(--blue); }
+    .ic-green { background: var(--green); }
+    .app-name { font-size: 15px; font-weight: 800; color: var(--blue); letter-spacing: -.2px; }
+    .app-sub  { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+
+    /* ─── BACK ────────────────────────────────────────── */
+    .back {
+      background: none; border: none; color: var(--muted);
+      font-size: 14px; cursor: pointer; padding: 0 0 16px;
+      display: flex; align-items: center; gap: 6px; width: fit-content;
+    }
+    .back:hover { color: var(--blue); }
+
+    /* ─── CARD ────────────────────────────────────────── */
+    .card {
+      background: var(--card); border-radius: 18px;
+      padding: 17px 16px; box-shadow: var(--shadow); margin-bottom: 14px;
+    }
+    .clabel {
+      font-size: 10.5px; font-weight: 800; text-transform: uppercase;
+      letter-spacing: .8px; color: var(--muted); margin-bottom: 10px;
+    }
+
+    /* ─── WELCOME ─────────────────────────────────────── */
+    .hero { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 14px; }
+    .hero-title { font-size: 27px; font-weight: 900; line-height: 1.18; margin-bottom: 3px; }
+    .hero-sub   { font-size: 15px; color: var(--muted); line-height: 1.55; margin-bottom: 6px; }
+
+    .role-btn {
+      width: 100%; display: flex; align-items: center; gap: 14px;
+      padding: 18px 16px; border-radius: 18px; border: none;
+      background: var(--card); box-shadow: var(--shadow);
+      cursor: pointer; text-align: left;
+      transition: transform .12s, box-shadow .12s;
+    }
+    .role-btn:hover  { box-shadow: 0 6px 28px rgba(0,30,70,.15); }
+    .role-btn:active { transform: scale(.97); }
+    .role-icon {
+      width: 54px; height: 54px; border-radius: 14px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 27px; flex-shrink: 0;
+    }
+    .ri-b { background: var(--blue-lt); }
+    .ri-g { background: var(--green-lt); }
+    .role-name { font-size: 16px; font-weight: 800; }
+    .role-desc { font-size: 13px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
+
+    /* ─── BIG CODE ────────────────────────────────────── */
+    .big-code {
+      font-size: 58px; font-weight: 900; letter-spacing: 14px;
+      color: var(--blue); text-align: center; padding: 10px 0 5px;
+      font-family: 'Courier New', monospace; text-indent: 14px;
+    }
+    .code-hint { text-align: center; font-size: 13px; color: var(--muted); line-height: 1.5; }
+    .copy-btn {
+      display: flex; align-items: center; justify-content: center; gap: 7px;
+      margin: 12px auto 0; background: var(--blue-lt); color: var(--blue);
+      border: none; border-radius: 10px; padding: 10px 22px;
+      font-size: 13.5px; font-weight: 700; cursor: pointer;
+    }
+    .copy-btn:hover { background: #ccdff8; }
+
+    /* ─── STATUS ──────────────────────────────────────── */
+    .sbadge {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px 14px; border-radius: 12px;
+      font-size: 14px; font-weight: 600; line-height: 1.4;
+    }
+    .sdot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .s-init { background: #F4F6F8; color: var(--muted); }
+    .s-init .sdot { background: var(--muted); }
+    .s-wait { background: var(--amber-lt); color: #7A4A00; }
+    .s-wait .sdot { background: var(--amber); animation: blink 1.5s infinite; }
+    .s-ok   { background: var(--green-lt); color: #0D5530; }
+    .s-ok   .sdot { background: var(--green); }
+    .s-err  { background: var(--red-lt);   color: #7A1010; }
+    .s-err  .sdot { background: var(--red); }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+    /* ─── VOLUME METER ────────────────────────────────── */
+    .vol-wrap  { margin-top: 12px; }
+    .vol-label { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+    .vol-track { height: 9px; background: var(--border); border-radius: 5px; overflow: hidden; }
+    .vol-fill  {
+      height: 100%; width: 0; border-radius: 5px;
+      background: linear-gradient(90deg, var(--green) 0%, #F59E0B 65%, var(--red) 100%);
+      transition: width .07s linear;
+    }
+
+    /* ─── BUTTONS ─────────────────────────────────────── */
+    .btn {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; padding: 16px; border-radius: 14px; border: none;
+      font-size: 15.5px; font-weight: 800; cursor: pointer;
+      transition: transform .1s, opacity .15s;
+    }
+    .btn:disabled { opacity: .3; cursor: not-allowed; }
+    .btn:not(:disabled):active { transform: scale(.97); }
+    .btn-blue  { background: var(--blue);  color: #fff; }
+    .btn-green { background: var(--green); color: #fff; }
+    .btn-red   { background: var(--red);   color: #fff; }
+    .btn-ghost { background: transparent; border: 2px solid var(--border); color: var(--muted); }
+    .btn-row { display: flex; gap: 10px; margin-top: 12px; }
+
+    /* ─── CODE INPUT ──────────────────────────────────── */
+    .cinput {
+      width: 100%; font-size: 46px; font-weight: 900;
+      letter-spacing: 14px; text-indent: 14px; text-align: center;
+      padding: 15px 12px; margin-bottom: 14px;
+      border: 3px solid var(--border); border-radius: 14px;
+      outline: none; font-family: 'Courier New', monospace;
+      background: var(--bg); color: var(--ink); transition: border-color .2s;
+    }
+    .cinput:focus { border-color: var(--blue); }
+    .cinput.shake { border-color: var(--red); animation: shake .4s; }
+    @keyframes shake {
+      0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-6px)} 40%,80%{transform:translateX(6px)}
+    }
+
+    /* ─── RECORDING TIMER ─────────────────────────────── */
+    .rec-timer {
+      font-size: 28px; font-weight: 900; color: var(--red);
+      text-align: center; display: none; margin-bottom: 10px;
+      letter-spacing: 1px;
+    }
+
+    /* ─── RECORDINGS LIST ─────────────────────────────── */
+    .rec-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 11px 0; border-bottom: 1px solid var(--border);
+    }
+    .rec-item:last-child { border-bottom: none; }
+    .rec-name { font-size: 14px; font-weight: 700; }
+    .rec-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .btn-dl {
+      flex-shrink: 0; padding: 8px 14px; border-radius: 10px;
+      background: var(--blue-lt); color: var(--blue);
+      border: none; font-size: 13px; font-weight: 700; cursor: pointer;
+    }
+    .btn-dl:hover { background: #ccdff8; }
+
+    /* ─── AUTOPLAY BANNER ─────────────────────────────── */
+    #autoplay-banner {
+      display: none; background: var(--amber-lt); color: var(--amber);
+      border-radius: 12px; padding: 13px 16px; margin-bottom: 14px;
+      font-size: 14px; font-weight: 600; text-align: center;
+      border: 1.5px solid #F0C060; cursor: pointer;
+    }
+
+    /* ─── FOOTER ──────────────────────────────────────── */
+    .foot {
+      text-align: center; font-size: 11px; color: var(--muted);
+      margin-top: auto; padding-top: 20px; line-height: 1.7;
+    }
+
+    /* ══════════════════════════════════════════════════
+       DONOR VIEW — full screen, shown to the donor
+    ══════════════════════════════════════════════════ */
+    #s-donor {
+      background: linear-gradient(160deg, #0A1929 0%, #0D2D50 100%);
+      padding: 0;
+      max-width: none;
+      position: relative;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Discreet button — only the captador knows to tap it */
+    .donor-menu {
+      position: absolute; top: 18px; right: 18px;
+      background: rgba(255,255,255,.10); color: rgba(255,255,255,.55);
+      border: none; border-radius: 10px;
+      width: 38px; height: 38px;
+      font-size: 18px; font-weight: 900; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      letter-spacing: 2px; transition: background .15s;
+      z-index: 10;
+    }
+    .donor-menu:hover { background: rgba(255,255,255,.18); }
+
+    /* Transmitting indicator — small, top-left */
+    .tx-dot {
+      position: absolute; top: 22px; left: 18px;
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: rgba(255,255,255,.4);
+      pointer-events: none;
+    }
+    .tx-dot::before {
+      content: '';
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #2ECC71;
+      animation: blink 2s infinite;
+      flex-shrink: 0;
+    }
+
+    .donor-body {
+      display: flex; flex-direction: column;
+      align-items: center; text-align: center;
+      padding: 60px 32px 48px;
+      width: 100%;
+    }
+
+    .donor-emblem {
+      width: 80px; height: 80px; border-radius: 22px;
+      background: rgba(255,255,255,.12);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 40px; margin-bottom: 22px;
+    }
+
+    .donor-org {
+      font-size: 32px; font-weight: 900; color: #FFFFFF;
+      letter-spacing: -.5px; line-height: 1.1;
+    }
+    .donor-country {
+      font-size: 18px; font-weight: 600;
+      color: rgba(255,255,255,.5); margin-top: 4px; letter-spacing: 3px;
+      text-transform: uppercase;
+    }
+
+    .donor-sep {
+      width: 48px; height: 3px; border-radius: 2px;
+      background: rgba(255,255,255,.25); margin: 24px auto;
+    }
+
+    .donor-tagline {
+      font-size: 18px; color: rgba(255,255,255,.80);
+      line-height: 1.55; max-width: 400px; font-weight: 500;
+      margin-bottom: 28px;
+    }
+
+    .donor-items { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 380px; }
+    .donor-item {
+      display: flex; align-items: center; gap: 14px;
+      background: rgba(255,255,255,.08); border-radius: 14px;
+      padding: 14px 18px; text-align: left;
+    }
+    .di-icon { font-size: 24px; flex-shrink: 0; }
+    .di-text { font-size: 15px; font-weight: 600; color: rgba(255,255,255,.88); }
+
+    .donor-cta {
+      margin-top: 30px;
+      font-size: 16px; font-weight: 800;
+      color: #FFFFFF; letter-spacing: .2px;
+      background: rgba(255,255,255,.12);
+      border: 1.5px solid rgba(255,255,255,.2);
+      border-radius: 50px; padding: 13px 32px;
+    }
+
+    /* ─── BOTTOM SHEET (captador controls) ─────────────── */
+    .sheet-bg {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.45); z-index: 200;
+    }
+    .sheet-bg.open { display: block; }
+
+    .bottom-sheet {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: var(--card); border-radius: 24px 24px 0 0;
+      padding: 16px 20px 36px;
+      transform: translateY(100%);
+      transition: transform .3s cubic-bezier(.32,1,.36,1);
+      z-index: 201;
+      box-shadow: 0 -8px 50px rgba(0,0,0,.25);
+      max-width: 560px;
+      margin: 0 auto;
+    }
+    .bottom-sheet.open { transform: translateY(0); }
+
+    .sheet-handle {
+      width: 36px; height: 4px; border-radius: 2px;
+      background: var(--border); margin: 0 auto 18px;
+    }
+
+    .sheet-close {
+      width: 100%; margin-top: 10px;
+      background: var(--blue-lt); color: var(--blue);
+      border: none; border-radius: 14px; padding: 15px;
+      font-size: 15px; font-weight: 700; cursor: pointer;
+    }
+
+    .sheet-form-btn {
+      width: 100%; margin-top: 14px;
+      background: var(--green); color: #fff;
+      border: none; border-radius: 14px; padding: 16px;
+      font-size: 15.5px; font-weight: 800; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+
+    /* ══════════════════════════════════════════════════
+       FORM OVERLAY — embedded real donation form (iframe)
+    ══════════════════════════════════════════════════ */
+    #form-overlay {
+      display: none; position: fixed; inset: 0; z-index: 150;
+      flex-direction: column; background: #fff;
+    }
+    #form-overlay.open { display: flex; }
+
+    .form-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px; background: var(--blue);
+      flex-shrink: 0;
+    }
+    .form-bar-btn {
+      background: rgba(255,255,255,.15); color: #fff;
+      border: none; border-radius: 10px; padding: 9px 14px;
+      font-size: 14px; font-weight: 700; cursor: pointer;
+      display: flex; align-items: center; gap: 6px; white-space: nowrap;
+    }
+    .form-bar-btn:hover { background: rgba(255,255,255,.28); }
+    .form-bar-live {
+      margin-left: auto; display: flex; align-items: center; gap: 6px;
+      font-size: 11px; font-weight: 700; color: rgba(255,255,255,.85);
+      letter-spacing: .5px;
+    }
+    .form-bar-live::before {
+      content: ''; width: 8px; height: 8px; border-radius: 50%;
+      background: #2ECC71; animation: blink 2s infinite;
+    }
+    #form-frame {
+      flex: 1; width: 100%; border: none; background: #fff;
+    }
+    .form-fallback {
+      display: none; flex-direction: column; align-items: center;
+      justify-content: center; text-align: center; gap: 16px;
+      padding: 40px 28px; flex: 1;
+    }
+    .form-fallback p { font-size: 15px; color: var(--muted); line-height: 1.6; max-width: 360px; }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════ WELCOME ════════════════════ -->
+<div id="s-home" class="screen on">
+  <div class="app-hdr">
+    <div class="app-icon ic-blue">🛠</div>
+    <div>
+      <div class="app-name">Ingeniería Sin Fronteras Argentina</div>
+      <div class="app-sub">Monitor de Captación en Campo</div>
+    </div>
+  </div>
+
+  <div class="hero">
+    <div>
+      <div class="hero-title">¿Cuál es tu<br>rol hoy?</div>
+      <div class="hero-sub">Audio en tiempo real entre captador/a y coordinador/a. Sin video. Sin servidor intermedio.</div>
+    </div>
+
+    <button class="role-btn" onclick="initCoord()">
+      <div class="role-icon ri-b">📱</div>
+      <div>
+        <div class="role-name" style="color:var(--blue)">Coordinador/a</div>
+        <div class="role-desc">En tu celular — escuchás en vivo y grabás las conversaciones</div>
+      </div>
+    </button>
+
+    <button class="role-btn" onclick="initCap()">
+      <div class="role-icon ri-g">🎤</div>
+      <div>
+        <div class="role-name" style="color:var(--green)">Captador/a</div>
+        <div class="role-desc">En tu tablet — transmitís al coordinador mientras trabajás</div>
+      </div>
+    </button>
+  </div>
+
+  <div class="foot">
+    🔒 Audio P2P entre dispositivos · Sin video<br>
+    Requiere internet solo para iniciar la conexión · ~15 MB/hora
+  </div>
+</div>
+
+
+<!-- ════════════════════ COORDINATOR (celular) ════════════════════ -->
+<div id="s-coord" class="screen">
+  <button class="back" onclick="goBack()">← Volver</button>
+
+  <div class="app-hdr">
+    <div class="app-icon ic-blue">📱</div>
+    <div>
+      <div class="app-name">Modo Coordinador/a</div>
+      <div class="app-sub">Escuchá y grabá desde tu celular</div>
+    </div>
+  </div>
+
+  <!-- Code to share -->
+  <div class="card">
+    <div class="clabel">📋 Código de sesión — dictale al captador/a</div>
+    <div class="big-code" id="c-code">----</div>
+    <div class="code-hint">El captador/a lo ingresa en su tablet para conectarse</div>
+    <button class="copy-btn" id="c-copy-btn" onclick="copyCode()">📋 Copiar código</button>
+  </div>
+
+  <!-- Autoplay warning -->
+  <div id="autoplay-banner" onclick="activateAudio()">
+    ▶ Tocá aquí para activar el audio del captador/a
+  </div>
+
+  <!-- Connection status + volume -->
+  <div class="card">
+    <div class="clabel">📡 Conexión</div>
+    <div class="sbadge s-init" id="c-status">
+      <div class="sdot"></div>
+      <span>Iniciando...</span>
+    </div>
+    <div class="vol-wrap" id="c-vol-wrap" style="display:none">
+      <div class="vol-label">Nivel de audio recibido</div>
+      <div class="vol-track"><div class="vol-fill" id="c-vol-fill"></div></div>
+    </div>
+  </div>
+
+  <!-- Recording controls -->
+  <div class="card">
+    <div class="clabel">⏺ Grabación</div>
+    <div class="rec-timer" id="c-timer">● 00:00</div>
+    <div class="btn-row">
+      <button class="btn btn-red" id="c-btn-start" onclick="startRec()" disabled>
+        ⏺ Iniciar grabación
+      </button>
+      <button class="btn btn-ghost" id="c-btn-stop" onclick="stopRec()" style="display:none">
+        ⏹ Detener
+      </button>
+    </div>
+  </div>
+
+  <!-- Recordings list -->
+  <div class="card" id="c-recs-card" style="display:none">
+    <div class="clabel">💾 Grabaciones de esta sesión</div>
+    <div id="c-recs-list"></div>
+  </div>
+
+  <audio id="c-audio" autoplay style="display:none"></audio>
+  <div class="foot">Podés tener varios captadores con el mismo código</div>
+</div>
+
+
+<!-- ════════════════════ CAPTADOR SETUP (tablet) ════════════════════ -->
+<div id="s-cap" class="screen">
+  <button class="back" onclick="goBack()">← Volver</button>
+
+  <div class="app-hdr">
+    <div class="app-icon ic-green">🎤</div>
+    <div>
+      <div class="app-name">Modo Captador/a</div>
+      <div class="app-sub">Conectate y transmití desde la tablet</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="clabel">🔑 Código del coordinador/a</div>
+    <input
+      class="cinput" id="cap-cin"
+      type="text" placeholder="0000"
+      maxlength="4" inputmode="numeric" autocomplete="off"
+    >
+    <button class="btn btn-green" id="cap-btn" onclick="capConnect()">
+      📡 Conectar y transmitir
+    </button>
+  </div>
+
+  <!-- Error/status (visible briefly on errors before resetting) -->
+  <div id="cap-err-card" class="card" style="display:none">
+    <div class="sbadge s-err" id="cap-setup-status">
+      <div class="sdot"></div>
+      <span></span>
+    </div>
+  </div>
+
+  <div class="foot">
+    Al conectarte, la tablet pasará a la pantalla del donante<br>
+    Toca ··· para acceder a los controles
+  </div>
+</div>
+
+
+<!-- ════════════════════ DONOR VIEW (tablet, mostrada al donante) ════════════════════ -->
+<div id="s-donor" class="screen">
+
+  <!-- Discreet menu — only captador knows to tap it -->
+  <button class="donor-menu" onclick="openSheet()" title="Controles">···</button>
+
+  <!-- Subtle live indicator -->
+  <div class="tx-dot">EN VIVO</div>
+
+  <!-- Embedded Google Slides (shown when SLIDES_URL is configured) -->
+  <iframe id="slides-frame"
+          title="Presentación ISF Argentina"
+          allowfullscreen
+          style="display:none; position:absolute; inset:0; width:100%; height:100%; border:none; background:#0A1929;"></iframe>
+
+  <!-- Branded fallback (shown when no slides URL is set) -->
+  <div class="donor-body" id="donor-branded">
+    <div class="donor-emblem">🛠</div>
+    <div class="donor-org">Ingeniería<br>Sin Fronteras</div>
+    <div class="donor-country">Argentina</div>
+
+    <div class="donor-sep"></div>
+
+    <p class="donor-tagline">
+      Aplicamos la ingeniería para mejorar la calidad de vida de las comunidades más vulnerables.
+    </p>
+
+    <div class="donor-items">
+      <div class="donor-item">
+        <span class="di-icon">💧</span>
+        <span class="di-text">Agua potable en zonas rurales</span>
+      </div>
+      <div class="donor-item">
+        <span class="di-icon">⚡</span>
+        <span class="di-text">Acceso a energía limpia</span>
+      </div>
+      <div class="donor-item">
+        <span class="di-icon">🏥</span>
+        <span class="di-text">Infraestructura para la salud</span>
+      </div>
+    </div>
+
+    <div class="donor-cta">Con tu apoyo, llegamos más lejos</div>
+  </div>
+</div>
+
+
+<!-- ═══ BOTTOM SHEET (captador controls over donor view) ═══ -->
+<div class="sheet-bg" id="sheet-bg" onclick="closeSheet()"></div>
+<div class="bottom-sheet" id="cap-sheet">
+  <div class="sheet-handle"></div>
+  <div class="clabel">📡 Estado de la transmisión</div>
+  <div class="sbadge s-init" id="sheet-status">
+    <div class="sdot"></div>
+    <span>Conectando...</span>
+  </div>
+  <div class="vol-wrap" id="sheet-vol-wrap" style="display:none">
+    <div class="vol-label">Tu nivel de micrófono</div>
+    <div class="vol-track"><div class="vol-fill" id="sheet-vol-fill"></div></div>
+  </div>
+
+  <button class="sheet-form-btn" onclick="openForm()">📝 Abrir formulario de donación</button>
+
+  <div class="btn-row" style="margin-top:12px">
+    <button class="btn btn-ghost" onclick="capDisconnect()">✕ Detener transmisión</button>
+  </div>
+  <button class="sheet-close" onclick="closeSheet()">↩ Volver a la pantalla del donante</button>
+</div>
+
+
+<!-- ═══ FORM OVERLAY (real ISF donation form, embedded) ═══ -->
+<div id="form-overlay">
+  <div class="form-bar">
+    <button class="form-bar-btn" onclick="closeForm()">← Presentación</button>
+    <button class="form-bar-btn" onclick="openSheet()">···</button>
+    <button class="form-bar-btn" onclick="openFormNewTab()" title="Abrir en pestaña aparte">↗</button>
+    <span class="form-bar-live">TRANSMITIENDO</span>
+  </div>
+  <iframe id="form-frame"
+          title="Formulario de donación ISF Argentina"
+          allow="microphone; payment"
+          referrerpolicy="no-referrer-when-downgrade"></iframe>
+</div>
+
+
+<script>
+/* ═══════════════════════════════════════════════
+   STATE
+═══════════════════════════════════════════════ */
+let peer       = null;
+let lstream    = null;
+let rstream    = null;
+let recorder   = null;
+let recChunks  = [];
+let recs       = [];
+let recStart   = 0;
+let timerID    = null;
+let volAnimID  = null;
+let audCtx     = null;
+let resetTmr   = null;
+let pendingAudio = null;
+let formLoaded = false;
+
+const FORM_URL = 'https://isf-argentina.org/formularios/donar';
+
+// ══════════════════════════════════════════════════════════════
+//  PEGÁ ACÁ la URL de tu presentación de Google Slides.
+//  Cómo obtenerla: en Slides → Archivo → Compartir → Publicar en
+//  la web → pestaña "Insertar" → copiá solo el enlace que está
+//  dentro de src="...". Debe terminar en /embed?...
+//  Si lo dejás vacío (''), se muestra el cartel de marca de respaldo.
+// ══════════════════════════════════════════════════════════════
+const SLIDES_URL = '';
+
+const $ = id => document.getElementById(id);
+
+/* ═══════════════════════════════════════════════
+   NAV
+═══════════════════════════════════════════════ */
+function go(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('on'));
+  $(id).classList.add('on');
+  window.scrollTo(0, 0);
+}
+
+function goBack() {
+  clearTimeout(resetTmr);
+  closeSheet();
+  teardown();
+  resetCapForm();
+  $('c-recs-card').style.display = 'none';
+  go('s-home');
+}
+
+function teardown() {
+  peer?.destroy();  peer = null;
+  lstream?.getTracks().forEach(t => t.stop()); lstream = null;
+  if (recorder?.state !== 'inactive') recorder?.stop();
+  clearInterval(timerID); timerID = null;
+  stopVol();
+  audCtx?.close(); audCtx = null;
+  $('c-audio').srcObject = null;
+  rstream = null;
+  pendingAudio = null;
+  $('c-vol-wrap').style.display      = 'none';
+  $('sheet-vol-wrap').style.display  = 'none';
+  $('autoplay-banner').style.display = 'none';
+  $('form-overlay').classList.remove('open');
+  $('form-frame').src = 'about:blank';
+  $('slides-frame').src = 'about:blank';
+  formLoaded = false;
+}
+
+function resetCapForm() {
+  $('cap-btn').disabled           = false;
+  $('cap-cin').value              = '';
+  $('cap-err-card').style.display = 'none';
+}
+
+/* ═══════════════════════════════════════════════
+   BOTTOM SHEET
+═══════════════════════════════════════════════ */
+function openSheet() {
+  $('sheet-bg').classList.add('open');
+  $('cap-sheet').classList.add('open');
+}
+
+function closeSheet() {
+  $('sheet-bg').classList.remove('open');
+  $('cap-sheet').classList.remove('open');
+}
+
+/* ═══════════════════════════════════════════════
+   EMBEDDED DONATION FORM
+   The mic stream + WebRTC keep running because the
+   page never navigates — we only show/hide DOM.
+═══════════════════════════════════════════════ */
+function openForm() {
+  closeSheet();
+  const frame = $('form-frame');
+  if (!formLoaded) {
+    frame.src = FORM_URL;   // loads the REAL form; nothing is replicated
+    formLoaded = true;
+  }
+  $('form-overlay').classList.add('open');
+}
+
+function closeForm() {
+  $('form-overlay').classList.remove('open');
+}
+
+function openFormNewTab() {
+  window.open(FORM_URL, '_blank', 'noopener');
+}
+
+function loadSlides() {
+  const frame   = $('slides-frame');
+  const branded = $('donor-branded');
+  if (SLIDES_URL && SLIDES_URL.trim()) {
+    if (frame.src !== SLIDES_URL) frame.src = SLIDES_URL;
+    frame.style.display   = 'block';
+    branded.style.display = 'none';
+  } else {
+    frame.style.display   = 'none';
+    branded.style.display = 'flex';
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   COORDINATOR
+═══════════════════════════════════════════════ */
+function initCoord() {
+  go('s-coord');
+  const code = String(1000 + Math.floor(Math.random() * 9000));
+  $('c-code').textContent = code;
+  setCS('init', 'Iniciando...');
+  spawnCoordPeer(code);
+}
+
+function spawnCoordPeer(code) {
+  peer = new Peer('isfa' + code, {
+    config: { iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun.stunprotocol.org:3478' }
+    ]}
+  });
+
+  peer.on('open', () => setCS('wait', 'Esperando al captador/a...'));
+
+  peer.on('error', err => {
+    if (err.type === 'unavailable-id') {
+      const c2 = String(1000 + Math.floor(Math.random() * 9000));
+      $('c-code').textContent = c2;
+      peer.destroy();
+      spawnCoordPeer(c2);
+    } else if (err.type === 'network' || err.type === 'server-error') {
+      setCS('err', 'Sin red. Verificá WiFi o datos móviles.');
+    } else {
+      setCS('err', 'Error (' + err.type + '). Recargá la página.');
+    }
+  });
+
+  peer.on('call', call => {
+    call.answer();
+    setCS('ok', 'Captador/a conectado/a ✓');
+    $('c-btn-start').disabled = false;
+
+    call.on('stream', stream => {
+      rstream = stream;
+      const audio = $('c-audio');
+      audio.srcObject = stream;
+      const p = audio.play();
+      if (p !== undefined) {
+        p.catch(() => {
+          pendingAudio = audio;
+          $('autoplay-banner').style.display = 'block';
+          setCS('ok', 'Captador/a conectado/a · Tocá el banner amarillo');
+        });
+      }
+      startVol(stream, 'c-vol-fill', 'c-vol-wrap');
+    });
+
+    call.on('close', () => {
+      setCS('wait', 'Captador/a desconectado/a. Esperando...');
+      $('c-btn-start').disabled = true;
+      $('c-vol-wrap').style.display = 'none';
+      rstream = null; stopVol();
+    });
+
+    call.on('error', () => setCS('err', 'Error en el canal de audio.'));
+  });
+
+  peer.on('disconnected', () => {
+    if (peer) { setCS('wait', 'Reconectando...'); peer.reconnect(); }
+  });
+}
+
+function setCS(type, msg) {
+  const el = $('c-status');
+  el.className = 'sbadge s-' + type;
+  el.innerHTML = `<div class="sdot"></div><span>${msg}</span>`;
+}
+
+function activateAudio() {
+  pendingAudio?.play();
+  pendingAudio = null;
+  $('autoplay-banner').style.display = 'none';
+  setCS('ok', 'Captador/a conectado/a ✓');
+}
+
+function copyCode() {
+  const code = $('c-code').textContent;
+  const btn  = $('c-copy-btn');
+  navigator.clipboard?.writeText(code)
+    .then(() => { btn.textContent = '✓ ¡Copiado!'; setTimeout(() => btn.textContent = '📋 Copiar código', 2200); })
+    .catch(() => alert('Código: ' + code));
+}
+
+/* ═══════════════════════════════════════════════
+   RECORDING
+═══════════════════════════════════════════════ */
+function startRec() {
+  if (!rstream) return;
+  recChunks = [];
+  const mime = ['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg']
+    .find(m => MediaRecorder.isTypeSupported(m)) || '';
+  try {
+    recorder = new MediaRecorder(rstream, { mimeType: mime || undefined, audioBitsPerSecond: 32000 });
+  } catch (_) { recorder = new MediaRecorder(rstream); }
+  recorder.ondataavailable = e => { if (e.data.size > 0) recChunks.push(e.data); };
+  recorder.onstop = saveRec;
+  recorder.start(500);
+  recStart = Date.now();
+  $('c-btn-start').style.display = 'none';
+  $('c-btn-stop').disabled       = false;
+  $('c-btn-stop').style.display  = '';
+  $('c-timer').style.display     = 'block';
+  timerID = setInterval(() => {
+    const s  = Math.floor((Date.now() - recStart) / 1000);
+    const mm = String(Math.floor(s / 60)).padStart(2,'0');
+    const ss = String(s % 60).padStart(2,'0');
+    $('c-timer').textContent = `● ${mm}:${ss}`;
+  }, 1000);
+}
+
+function stopRec() {
+  if (recorder?.state !== 'inactive') recorder.stop();
+  clearInterval(timerID); timerID = null;
+  $('c-btn-stop').style.display  = 'none';
+  $('c-btn-start').style.display = '';
+  $('c-btn-start').disabled      = !rstream;
+  $('c-timer').style.display     = 'none';
+}
+
+function saveRec() {
+  const mime = recChunks[0]?.type || 'audio/webm';
+  const blob = new Blob(recChunks, { type: mime });
+  const url  = URL.createObjectURL(blob);
+  const dur  = Math.round((Date.now() - recStart) / 1000);
+  const n    = new Date();
+  const pad  = x => String(x).padStart(2,'0');
+  const ext  = mime.includes('mp4') ? 'mp4' : 'webm';
+  const name = `ISF-${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}h${pad(n.getMinutes())}.${ext}`;
+  recs.unshift({ url, name, dur, t: n });
+  renderRecs();
+}
+
+function renderRecs() {
+  if (!recs.length) return;
+  $('c-recs-card').style.display = 'block';
+  $('c-recs-list').innerHTML = recs.map((r, i) => `
+    <div class="rec-item">
+      <div>
+        <div class="rec-name">Grabación ${recs.length - i}</div>
+        <div class="rec-meta">${r.t.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})} · ${fmtDur(r.dur)}</div>
+      </div>
+      <button class="btn-dl" onclick="dlRec(${i})">⬇ Guardar</button>
+    </div>
+  `).join('');
+}
+
+function dlRec(i) {
+  Object.assign(document.createElement('a'), { href: recs[i].url, download: recs[i].name }).click();
+}
+
+function fmtDur(s) {
+  if (s < 60) return s + ' seg';
+  const m = Math.floor(s / 60), r = s % 60;
+  return r ? `${m} min ${r} seg` : `${m} min`;
+}
+
+/* ═══════════════════════════════════════════════
+   CAPTADOR
+═══════════════════════════════════════════════ */
+function initCap() { go('s-cap'); }
+
+async function capConnect() {
+  const cinput = $('cap-cin');
+  const code   = cinput.value.replace(/\D/g, '');
+
+  if (code.length !== 4) {
+    cinput.classList.add('shake');
+    setTimeout(() => cinput.classList.remove('shake'), 500);
+    return;
+  }
+
+  $('cap-btn').disabled = true;
+
+  // HTTPS check
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+    showCapErr('Necesitás abrir la app por HTTPS. Consultá las instrucciones.');
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showCapErr('Tu navegador no soporta micrófono. Usá Chrome o Safari.');
+    return;
+  }
+
+  try {
+    lstream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true },
+      video: false
+    });
+  } catch(e) {
+    const msg = e.name === 'NotAllowedError'
+      ? 'Permiso de micrófono denegado. Habilitalo en configuración del navegador.'
+      : 'No se pudo acceder al micrófono: ' + e.message;
+    showCapErr(msg); return;
+  }
+
+  setSheetStatus('wait', 'Conectando con el coordinador...');
+
+  // Show donor view immediately while connecting
+  loadSlides();
+  go('s-donor');
+
+  peer = new Peer({
+    config: { iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun.stunprotocol.org:3478' }
+    ]}
+  });
+
+  peer.on('open', () => {
+    setSheetStatus('wait', 'Llamando al coordinador...');
+    const call = peer.call('isfa' + code, lstream);
+    let connected = false;
+
+    const t = setTimeout(() => {
+      if (!connected) {
+        connected = true;
+        setSheetStatus('ok', '📡 Transmitiendo en vivo...');
+        startVol(lstream, 'sheet-vol-fill', 'sheet-vol-wrap');
+      }
+    }, 2000);
+
+    call.on('stream', () => {
+      if (!connected) {
+        connected = true;
+        clearTimeout(t);
+        setSheetStatus('ok', '📡 Transmitiendo en vivo...');
+        startVol(lstream, 'sheet-vol-fill', 'sheet-vol-wrap');
+      }
+    });
+
+    call.on('close', () => {
+      clearTimeout(t);
+      setSheetStatus('init', 'Transmisión finalizada.');
+    });
+
+    call.on('error', () => {
+      clearTimeout(t);
+      setSheetStatus('err', 'Error en la transmisión de audio.');
+    });
+  });
+
+  peer.on('error', err => {
+    const msgs = {
+      'peer-unavailable': 'Coordinador no encontrado. ¿Es correcto el código?',
+      'network':          'Sin red. Verificá tu conexión.',
+      'server-error':     'Error de servidor. Intentá de nuevo.',
+    };
+    const msg = msgs[err.type] || 'Error al conectar: ' + err.type;
+    // Go back to setup and show error
+    go('s-cap');
+    showCapErr(msg);
+  });
+}
+
+function capDisconnect() {
+  closeSheet();
+  teardown();
+  go('s-cap');
+  resetCapForm();
+}
+
+function showCapErr(msg) {
+  $('cap-btn').disabled = false;
+  $('cap-err-card').style.display = 'block';
+  const el = $('cap-setup-status');
+  el.className = 'sbadge s-err';
+  el.innerHTML = `<div class="sdot"></div><span>${msg}</span>`;
+  resetTmr = setTimeout(() => { $('cap-err-card').style.display = 'none'; }, 3000);
+}
+
+function setSheetStatus(type, msg) {
+  const el = $('sheet-status');
+  el.className = 'sbadge s-' + type;
+  el.innerHTML = `<div class="sdot"></div><span>${msg}</span>`;
+}
+
+/* ═══════════════════════════════════════════════
+   VOLUME METER
+═══════════════════════════════════════════════ */
+function startVol(stream, fillId, wrapId) {
+  $(wrapId).style.display = 'block';
+  stopVol();
+  try {
+    audCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audCtx.createMediaStreamSource(stream);
+    const an  = audCtx.createAnalyser();
+    an.fftSize = 256;
+    src.connect(an);
+    const data = new Uint8Array(an.frequencyBinCount);
+    const fill = $(fillId);
+    (function tick() {
+      if (!audCtx) return;
+      an.getByteFrequencyData(data);
+      fill.style.width = Math.min(100, data.reduce((a,b)=>a+b,0)/data.length*2.2) + '%';
+      volAnimID = requestAnimationFrame(tick);
+    })();
+  } catch (_) {}
+}
+
+function stopVol() {
+  cancelAnimationFrame(volAnimID);
+  volAnimID = null;
+}
+</script>
+</body>
+</html>
