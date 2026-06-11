@@ -636,11 +636,14 @@ let reconnTries = 0;
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
 // ══════════════════════════════════════════════════════════════
-//  PEGÁ ACÁ la URL de tu presentación de Google Slides.
-//  En Slides → Archivo → Compartir → Publicar en la web → "Insertar"
-//  → copiá solo el enlace dentro de src="..." (termina en /embed?...)
+//  Presentación de Google Slides que ve el donante.
+//  Es la misma presentación (ID 1NdcEoz...), usando el endpoint
+//  /embed que Google permite incrustar.
+//  ⚠️ Para que el donante la vea SIN tener que iniciar sesión,
+//     en Slides → Compartir → "Cualquier persona con el enlace"
+//     → rol "Lector".
 //  Si lo dejás vacío (''), se muestra el cartel de marca de respaldo.
-const SLIDES_URL = '';
+const SLIDES_URL = 'https://docs.google.com/presentation/d/1NdcEozIVgEZEFsHIXwGSUblzHmO9Oxw922sUs8EITZU/embed?start=false&loop=false&delayms=60000&rm=minimal';
 
 // ══════════════════════════════════════════════════════════════
 //  SERVIDORES ICE (STUN + TURN)
