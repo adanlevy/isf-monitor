@@ -620,7 +620,7 @@
   </div>
 
   <div class="btn-row" style="margin-top:14px">
-    <button class="btn btn-ghost" onclick="goFullscreen()">⛶ Pantalla completa</button>
+    <button class="btn btn-ghost" id="cap-fs-btn" onclick="toggleFullscreen()">⛶ Pantalla completa</button>
     <button class="btn btn-ghost" id="cap-stop-btn" onclick="confirmStop()">✕ Detener</button>
   </div>
 </div>
@@ -631,8 +631,6 @@
   <div class="form-bar">
     <button class="form-bar-btn" onclick="closeForm()">← Presentación</button>
     <button class="form-bar-btn" onclick="openSheet()">···</button>
-    <button class="form-bar-btn" onclick="openFormNewTab()" title="Abrir en pestaña aparte">↗</button>
-    <span class="form-bar-live">TRANSMITIENDO</span>
   </div>
   <iframe id="form-frame"
           title="Formulario de donación ISF Argentina"
@@ -663,6 +661,8 @@ let recSink    = null;
 let pcmChunks  = [];      // captured Float32 PCM
 let pcmRate    = 48000;
 let recording  = false;
+let coordConnected = false;
+let coordDropTmr   = null;
 let volAnimID  = null;
 let audCtx     = null;
 let resetTmr   = null;
@@ -730,6 +730,8 @@ function goBack() {
 
 function teardown() {
   clearTimeout(resetTmr); resetTmr = null;
+  clearTimeout(coordDropTmr); coordDropTmr = null;
+  coordConnected = false;
   reconnTries = 0;
   peer?.destroy();  peer = null;
   lstream?.getTracks().forEach(t => t.stop()); lstream = null;
@@ -831,6 +833,10 @@ function loadSlides() {
   }
 }
 
+function isFullscreen() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement);
+}
+
 function goFullscreen() {
   const el = document.documentElement;
   const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
@@ -839,10 +845,22 @@ function goFullscreen() {
 
 function exitFullscreen() {
   const fn = document.exitFullscreen || document.webkitExitFullscreen;
-  if (fn && (document.fullscreenElement || document.webkitFullscreenElement)) {
+  if (fn && isFullscreen()) {
     try { fn.call(document); } catch (_) {}
   }
 }
+
+function toggleFullscreen() {
+  if (isFullscreen()) exitFullscreen();
+  else goFullscreen();
+}
+
+function syncFsLabel() {
+  const b = $('cap-fs-btn');
+  if (b) b.textContent = isFullscreen() ? '⤡ Salir de pantalla completa' : '⛶ Pantalla completa';
+}
+document.addEventListener('fullscreenchange', syncFsLabel);
+document.addEventListener('webkitfullscreenchange', syncFsLabel);
 
 /* ═══════════════════════════════════════════════
    COORDINATOR
@@ -879,6 +897,7 @@ function spawnCoordPeer(code) {
     call.answer();
     setCS('ok', 'Captador/a conectado/a ✓');
     $('c-btn-start').disabled = false;
+    coordConnected = true;
 
     call.on('stream', stream => {
       rstream = stream;
@@ -893,21 +912,58 @@ function spawnCoordPeer(code) {
         });
       }
       startVol(stream, 'c-vol-fill', 'c-vol-wrap');
+
+      // The remote audio track ending/muting is one disconnect signal
+      const tr = stream.getAudioTracks()[0];
+      if (tr) {
+        tr.onended = () => coordDisconnected();
+        tr.onmute  = () => setTimeout(() => { if (tr.muted) coordDisconnected(); }, 2500);
+      }
     });
 
-    call.on('close', () => {
-      setCS('wait', 'Captador/a desconectado/a. Esperando...');
-      $('c-btn-start').disabled = true;
-      $('c-vol-wrap').style.display = 'none';
-      rstream = null; stopVol();
-    });
+    // Watch the real ICE connection — fires reliably when the captador cuts
+    watchCoordConn(call);
 
+    call.on('close', () => coordDisconnected());
     call.on('error', () => setCS('err', 'Error en el canal de audio.'));
   });
 
   peer.on('disconnected', () => {
     if (peer) { setCS('wait', 'Reconectando...'); peer.reconnect(); }
   });
+}
+
+function watchCoordConn(call) {
+  const pc = call.peerConnection;
+  if (!pc) { setTimeout(() => watchCoordConn(call), 300); return; }
+  pc.oniceconnectionstatechange = () => {
+    const st = pc.iceConnectionState;
+    if (st === 'failed' || st === 'closed') {
+      coordDisconnected();
+    } else if (st === 'disconnected') {
+      // Could be a brief blip — confirm after a short grace period
+      clearTimeout(coordDropTmr);
+      coordDropTmr = setTimeout(() => {
+        if (pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
+          coordDisconnected();
+        }
+      }, 3500);
+    } else if (st === 'connected' || st === 'completed') {
+      clearTimeout(coordDropTmr);
+    }
+  };
+}
+
+function coordDisconnected() {
+  if (!coordConnected) return;     // avoid firing repeatedly
+  coordConnected = false;
+  clearTimeout(coordDropTmr);
+  if (recording) stopRec();        // save whatever was captured
+  setCS('wait', 'Captador/a desconectado/a. Esperando reconexión…');
+  $('c-btn-start').disabled = true;
+  $('c-vol-wrap').style.display = 'none';
+  rstream = null;
+  stopVol();
 }
 
 function setCS(type, msg) {
