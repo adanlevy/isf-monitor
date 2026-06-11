@@ -268,25 +268,6 @@
     .donor-form-btn:hover  { background: rgba(13,27,42,.92); }
     .donor-form-btn:active { transform: scale(.93); }
 
-    /* Transmitting indicator — pill so it reads on any background */
-    .tx-dot {
-      position: absolute; top: 18px; left: 16px;
-      display: flex; align-items: center; gap: 7px;
-      font-size: 11px; font-weight: 700; letter-spacing: .5px;
-      color: #fff; background: rgba(13,27,42,.72);
-      padding: 6px 11px; border-radius: 20px;
-      box-shadow: 0 2px 12px rgba(0,0,0,.45);
-      pointer-events: none; z-index: 20;
-    }
-    .tx-dot::before {
-      content: '';
-      width: 8px; height: 8px; border-radius: 50%;
-      background: #2ECC71;
-      box-shadow: 0 0 0 2px rgba(46,204,113,.35);
-      animation: blink 2s infinite;
-      flex-shrink: 0;
-    }
-
     .donor-body {
       display: flex; flex-direction: column;
       align-items: center; text-align: center;
@@ -379,27 +360,6 @@
     }
     #form-overlay.open { display: flex; }
 
-    .form-bar {
-      display: flex; align-items: center; gap: 10px;
-      padding: 10px 12px; background: var(--blue);
-      flex-shrink: 0;
-    }
-    .form-bar-btn {
-      background: rgba(255,255,255,.15); color: #fff;
-      border: none; border-radius: 10px; padding: 9px 14px;
-      font-size: 14px; font-weight: 700; cursor: pointer;
-      display: flex; align-items: center; gap: 6px; white-space: nowrap;
-    }
-    .form-bar-btn:hover { background: rgba(255,255,255,.28); }
-    .form-bar-live {
-      margin-left: auto; display: flex; align-items: center; gap: 6px;
-      font-size: 11px; font-weight: 700; color: rgba(255,255,255,.85);
-      letter-spacing: .5px;
-    }
-    .form-bar-live::before {
-      content: ''; width: 8px; height: 8px; border-radius: 50%;
-      background: #2ECC71; animation: blink 2s infinite;
-    }
     #form-frame {
       flex: 1; width: 100%; border: none; background: #fff;
     }
@@ -513,6 +473,12 @@
     <div class="clabel">💾 Grabaciones de esta sesión</div>
     <div id="c-recs-list"></div>
   </div>
+
+  <!-- Link to the Google Drive folder where recordings are stored -->
+  <a id="c-drive-link" class="btn btn-ghost" target="_blank" rel="noopener"
+     style="display:none; text-decoration:none; margin-bottom:14px">
+    📂 Ver grabaciones en Drive
+  </a>
 
   <audio id="c-audio" autoplay style="display:none"></audio>
   <div class="foot">Podés tener varios captadores con el mismo código</div>
@@ -628,10 +594,10 @@
 
 <!-- ═══ FORM OVERLAY (real ISF donation form, embedded) ═══ -->
 <div id="form-overlay">
-  <div class="form-bar">
-    <button class="form-bar-btn" onclick="closeForm()">← Presentación</button>
-    <button class="form-bar-btn" onclick="openSheet()">···</button>
-  </div>
+  <!-- Back to presentation (discreet, top-left — same pill as donor view) -->
+  <button class="donor-form-btn" style="z-index:160" onclick="closeForm()" title="Volver a la presentación">←</button>
+  <!-- Controls menu — same position/format (top-right) as the presentation view -->
+  <button class="donor-menu" style="z-index:160" onclick="openSheet()" title="Controles">···</button>
   <iframe id="form-frame"
           title="Formulario de donación ISF Argentina"
           allow="microphone; payment"
@@ -670,6 +636,13 @@ let pendingAudio = null;
 let formLoaded = false;
 let capCode    = '';
 let reconnTries = 0;
+let wakeLock       = null;   // Screen Wake Lock — mantiene la tablet despierta mientras transmite
+let dataConn       = null;   // canal de datos PeerJS — avisa la desconexión deliberada al instante
+let recAutoStopTmr = null;   // detiene la grabación 90 s después de que el captador se desconecta
+let activeCoordCall = null;  // llamada vigente en el coordinador (ignora eventos de llamadas viejas)
+
+// Versión incremental de la app. Subir este número en cada cambio.
+const APP_VERSION = '1.1.0';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -679,6 +652,14 @@ const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 //  y las instrucciones). Mientras esté vacío (''), los audios solo
 //  se descargan manualmente — el guardado en Drive queda apagado.
 const UPLOAD_URL = '';
+
+// ══════════════════════════════════════════════════════════════
+//  CARPETA DE GOOGLE DRIVE donde se guardan las grabaciones.
+//  Es el link de la carpeta (el mismo FOLDER_ID que usás en
+//  GuardarEnDrive.gs). El coordinador/a verá un botón "Ver
+//  grabaciones en Drive" que abre esta carpeta en una pestaña nueva.
+//  Dejar vacío ('') para ocultar el botón.
+const DRIVE_FOLDER_URL = 'https://drive.google.com/drive/folders/1Jxvyc3K1CpbX_qd6Tyv1j9BSi8va5ds0';
 
 // ══════════════════════════════════════════════════════════════
 //  Presentación de Google Slides que ve el donante.
@@ -731,8 +712,13 @@ function goBack() {
 function teardown() {
   clearTimeout(resetTmr); resetTmr = null;
   clearTimeout(coordDropTmr); coordDropTmr = null;
+  clearTimeout(recAutoStopTmr); recAutoStopTmr = null;
+  releaseWakeLock();
   coordConnected = false;
+  activeCoordCall = null;
   reconnTries = 0;
+  try { dataConn?.close(); } catch (_) {}
+  dataConn = null;
   peer?.destroy();  peer = null;
   lstream?.getTracks().forEach(t => t.stop()); lstream = null;
   recording = false;
@@ -863,10 +849,46 @@ document.addEventListener('fullscreenchange', syncFsLabel);
 document.addEventListener('webkitfullscreenchange', syncFsLabel);
 
 /* ═══════════════════════════════════════════════
+   WAKE LOCK
+   Mantiene la pantalla de la tablet encendida mientras se
+   transmite, igual que una app de video: aunque nadie toque,
+   no se bloquea. El sistema libera el lock al pasar a segundo
+   plano o bloquearse, así que lo volvemos a pedir cuando la
+   pestaña vuelve a estar visible.
+═══════════════════════════════════════════════ */
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch (_) { /* el navegador puede negarlo según el estado */ }
+}
+
+function releaseWakeLock() {
+  try { wakeLock?.release(); } catch (_) {}
+  wakeLock = null;
+}
+
+document.addEventListener('visibilitychange', () => {
+  // Reactivar el lock al volver a primer plano, solo mientras el
+  // captador/a está en la vista de donante transmitiendo.
+  if (document.visibilityState === 'visible' &&
+      $('s-donor').classList.contains('on') && peer) {
+    requestWakeLock();
+  }
+});
+
+/* ═══════════════════════════════════════════════
    COORDINATOR
 ═══════════════════════════════════════════════ */
 function initCoord() {
   go('s-coord');
+  const dl = $('c-drive-link');
+  if (DRIVE_FOLDER_URL && DRIVE_FOLDER_URL.trim()) {
+    dl.href = DRIVE_FOLDER_URL;
+    dl.style.display = 'flex';
+  } else {
+    dl.style.display = 'none';
+  }
   const code = String(1000 + Math.floor(Math.random() * 9000));
   $('c-code').textContent = code;
   setCS('init', 'Iniciando...');
@@ -879,6 +901,13 @@ function spawnCoordPeer(code) {
   });
 
   peer.on('open', () => setCS('wait', 'Esperando al captador/a...'));
+
+  // Canal de datos: el captador/a avisa por acá apenas toca "Detener",
+  // así la desconexión deliberada se detecta al instante (sin esperar
+  // a que se caiga la conexión ICE de audio).
+  peer.on('connection', conn => {
+    conn.on('data', d => { if (d === 'bye') coordDisconnected(); });
+  });
 
   peer.on('error', err => {
     if (err.type === 'unavailable-id') {
@@ -895,9 +924,13 @@ function spawnCoordPeer(code) {
 
   peer.on('call', call => {
     call.answer();
-    setCS('ok', 'Captador/a conectado/a ✓');
-    $('c-btn-start').disabled = false;
+    activeCoordCall = call;                     // esta pasa a ser la llamada vigente
+    const wasRecording = recording;            // si veníamos grabando, esto es una reconexión
+    clearTimeout(recAutoStopTmr); recAutoStopTmr = null;
     coordConnected = true;
+    $('c-btn-start').disabled = false;
+    setCS('ok', wasRecording ? 'Captador/a reconectado/a · grabación retomada ✓'
+                             : 'Captador/a conectado/a ✓');
 
     call.on('stream', stream => {
       rstream = stream;
@@ -913,18 +946,23 @@ function spawnCoordPeer(code) {
       }
       startVol(stream, 'c-vol-fill', 'c-vol-wrap');
 
+      // Si veníamos grabando (reconexión), seguimos capturando en el MISMO archivo
+      if (recording) attachRecSource(stream);
+
       // The remote audio track ending/muting is one disconnect signal
       const tr = stream.getAudioTracks()[0];
       if (tr) {
-        tr.onended = () => coordDisconnected();
-        tr.onmute  = () => setTimeout(() => { if (tr.muted) coordDisconnected(); }, 2500);
+        tr.onended = () => { if (call === activeCoordCall) coordDisconnected(); };
+        tr.onmute  = () => setTimeout(() => {
+          if (tr.muted && call === activeCoordCall) coordDisconnected();
+        }, 1500);
       }
     });
 
     // Watch the real ICE connection — fires reliably when the captador cuts
     watchCoordConn(call);
 
-    call.on('close', () => coordDisconnected());
+    call.on('close', () => { if (call === activeCoordCall) coordDisconnected(); });
     call.on('error', () => setCS('err', 'Error en el canal de audio.'));
   });
 
@@ -937,6 +975,7 @@ function watchCoordConn(call) {
   const pc = call.peerConnection;
   if (!pc) { setTimeout(() => watchCoordConn(call), 300); return; }
   pc.oniceconnectionstatechange = () => {
+    if (call !== activeCoordCall) return;   // ignorar eventos de llamadas viejas
     const st = pc.iceConnectionState;
     if (st === 'failed' || st === 'closed') {
       coordDisconnected();
@@ -944,10 +983,11 @@ function watchCoordConn(call) {
       // Could be a brief blip — confirm after a short grace period
       clearTimeout(coordDropTmr);
       coordDropTmr = setTimeout(() => {
-        if (pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
+        if (call === activeCoordCall &&
+            pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
           coordDisconnected();
         }
-      }, 3500);
+      }, 1500);
     } else if (st === 'connected' || st === 'completed') {
       clearTimeout(coordDropTmr);
     }
@@ -958,9 +998,21 @@ function coordDisconnected() {
   if (!coordConnected) return;     // avoid firing repeatedly
   coordConnected = false;
   clearTimeout(coordDropTmr);
-  if (recording) stopRec();        // save whatever was captured
-  setCS('wait', 'Captador/a desconectado/a. Esperando reconexión…');
-  $('c-btn-start').disabled = true;
+
+  if (recording) {
+    // No cortamos la grabación: esperamos a que el captador/a vuelva.
+    // La detención automática recién se dispara 90 s después de la
+    // desconexión. El coordinador/a siempre puede detenerla a mano antes.
+    setCS('wait', 'Captador/a desconectado/a · seguís grabando (auto-stop en 90 s)…');
+    clearTimeout(recAutoStopTmr);
+    recAutoStopTmr = setTimeout(() => {
+      if (!coordConnected && recording) stopRec();
+    }, 90000);
+  } else {
+    setCS('wait', 'Captador/a desconectado/a. Esperando reconexión…');
+    $('c-btn-start').disabled = true;
+  }
+
   $('c-vol-wrap').style.display = 'none';
   rstream = null;
   stopVol();
@@ -990,6 +1042,18 @@ function copyCode() {
 /* ═══════════════════════════════════════════════
    RECORDING
 ═══════════════════════════════════════════════ */
+// Reapunta el nodo de captura al stream actual. Se usa al reconectar
+// para seguir grabando en el MISMO archivo sin cortar (durante el corte
+// se graba silencio porque el grafo lo sigue tirando la salida de audio).
+function attachRecSource(stream) {
+  if (!recording || !recCtx) return;
+  try { recSource?.disconnect(); } catch (_) {}
+  try {
+    recSource = recCtx.createMediaStreamSource(stream);
+    recSource.connect(recProc);
+  } catch (_) {}
+}
+
 function startRec() {
   if (!rstream) return;
   recCapName = ($('c-capname').value || '').trim();
@@ -1202,6 +1266,7 @@ async function capConnect() {
   // Show donor view immediately while connecting
   loadSlides();
   go('s-donor');
+  requestWakeLock();   // mantené la tablet despierta, como una app de video
 
   peer = new Peer({
     config: { iceServers: ICE_SERVERS }
@@ -1209,6 +1274,8 @@ async function capConnect() {
 
   peer.on('open', () => {
     setSheetStatus('wait', 'Llamando al coordinador...');
+    // Canal de datos para avisar la desconexión deliberada al instante
+    try { dataConn = peer.connect('isfa' + capCode); } catch (_) {}
     placeCall();
   });
 
@@ -1276,11 +1343,14 @@ function scheduleReconnect() {
 }
 
 function capDisconnect() {
+  // Avisar al coordinador/a al instante, antes de destruir el peer
+  try { dataConn?.send('bye'); } catch (_) {}
   closeSheet();
   exitFullscreen();
-  teardown();
   go('s-cap');
   resetCapForm();
+  // dar un instante para que el 'bye' salga por el canal antes del teardown
+  setTimeout(teardown, 150);
 }
 
 function showCapErr(msg) {
@@ -1325,6 +1395,17 @@ function stopVol() {
   cancelAnimationFrame(volAnimID);
   volAnimID = null;
 }
+
+/* ═══════════════════════════════════════════════
+   VERSIÓN — se muestra en el pie de cada pantalla para
+   confirmar que estás en la última versión.
+═══════════════════════════════════════════════ */
+document.querySelectorAll('.foot').forEach(f => {
+  const v = document.createElement('div');
+  v.style.cssText = 'margin-top:8px; opacity:.55; font-size:10px; letter-spacing:.5px';
+  v.textContent = 'Versión ' + APP_VERSION;
+  f.appendChild(v);
+});
 </script>
 </body>
 </html>

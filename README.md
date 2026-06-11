@@ -15,8 +15,10 @@ La aplicación tiene dos modos que corren en el mismo archivo HTML:
 - Permite iniciar y detener grabaciones durante la escucha.
 - Convierte cada grabación a MP3 en el propio navegador y la ofrece para descargar.
 - Opcionalmente sube el MP3 a una carpeta de Google Drive de la organización de forma automática.
+- Ofrece un botón de acceso directo a la carpeta de Google Drive donde se guardan las grabaciones.
 - Registra el nombre del captador/a en el nombre del archivo para facilitar el seguimiento.
-- Detecta cuando el captador/a se desconecta y actualiza el estado visualmente.
+- Detecta cuando el captador/a se desconecta (de forma casi instantánea) y actualiza el estado visualmente.
+- Si la desconexión ocurre durante una grabación, **no la corta**: la mantiene esperando la reconexión y solo la detiene automáticamente 90 segundos después. El coordinador/a también puede detenerla a mano en cualquier momento.
 
 ### Modo Captador (tablet)
 
@@ -48,7 +50,11 @@ El audio viaja directamente entre el celular del coordinador y la tablet del cap
 
 **NAT traversal con STUN + TURN:** las redes móviles usan NAT simétrico, que bloquea las conexiones P2P directas. Con STUN solo, una fracción significativa de las conexiones en red celular fallan a los pocos segundos. Se incluyeron servidores TURN que actúan como relay cuando no hay ruta directa disponible. Las credenciales de producción recomendadas son de ExpressTURN o Metered (plan gratuito, 1000 GB/mes); el repositorio incluye credenciales `openrelay` solo para pruebas rápidas.
 
-**Reconexión automática:** `placeCall()` observa `RTCPeerConnection.iceConnectionState`. Si el estado pasa a `failed` o `disconnected`, `scheduleReconnect()` reintenta la llamada con backoff lineal de 1,5 s, hasta 8 intentos. En el lado del coordinador, `watchCoordConn()` hace el mismo seguimiento y dispara `coordDisconnected()` después de un período de gracia de 3,5 s para evitar falsos positivos por blips de red.
+**Reconexión automática:** `placeCall()` observa `RTCPeerConnection.iceConnectionState`. Si el estado pasa a `failed` o `disconnected`, `scheduleReconnect()` reintenta la llamada con backoff lineal de 1,5 s, hasta 8 intentos. En el lado del coordinador, `watchCoordConn()` hace el mismo seguimiento y dispara `coordDisconnected()` después de un período de gracia de 1,5 s para evitar falsos positivos por blips de red.
+
+**Detección instantánea de la desconexión deliberada:** cuando el captador/a toca "Detener", el medio WebRTC puede tardar varios segundos en cerrarse a nivel ICE. Para que la coordinación se entere al instante, se abre además un `DataConnection` de PeerJS entre ambos dispositivos; el captador/a envía un mensaje `'bye'` por ese canal justo antes de destruir el `Peer`, y el coordinador/a reacciona de inmediato. Si en cambio se pierde la señal sin aviso, la detección recae en el seguimiento de ICE con el período de gracia de 1,5 s.
+
+**Grabación a prueba de cortes:** si el captador/a se desconecta mientras hay una grabación activa, el coordinador/a no la corta. La grabación sigue (capturando silencio durante el corte) y, si el captador/a se reconecta, retoma el audio en el **mismo archivo** (`attachRecSource()` reapunta el nodo de captura al nuevo stream). Solo si pasan 90 segundos sin reconexión se dispara la detención automática y se guarda lo grabado.
 
 ### Grabación
 
@@ -99,7 +105,7 @@ README.md             — Este archivo
 
 ## Configuración
 
-Las cuatro constantes configurables están al comienzo del bloque `<script>` en `isf-monitor.html`:
+Las constantes configurables están al comienzo del bloque `<script>` en `isf-monitor.html`:
 
 ```javascript
 // URL real del formulario de donación (no se replica, se embebe)
@@ -109,6 +115,11 @@ const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 // Dejar vacío ('') para deshabilitar esta función.
 const UPLOAD_URL = '';
 
+// Link de la carpeta de Drive donde se guardan las grabaciones
+// (mismo FOLDER_ID que GuardarEnDrive.gs). Habilita el botón
+// "Ver grabaciones en Drive" del coordinador. Vacío ('') lo oculta.
+const DRIVE_FOLDER_URL = 'https://drive.google.com/drive/folders/...';
+
 // URL embed de la presentación de Google Slides.
 // Dejar vacío ('') para mostrar el cartel de marca de respaldo.
 const SLIDES_URL = 'https://docs.google.com/presentation/d/.../embed?...';
@@ -116,6 +127,11 @@ const SLIDES_URL = 'https://docs.google.com/presentation/d/.../embed?...';
 // Servidores ICE (STUN + TURN). Reemplazar las credenciales TURN
 // con las de ExpressTURN o Metered antes de usar en producción.
 const ICE_SERVERS = [ ... ];
+
+// Versión incremental de la app. Subir este número en cada cambio;
+// se muestra en el pie de cada pantalla para confirmar que estás
+// usando la última versión publicada.
+const APP_VERSION = '1.1.0';
 ```
 
 ---
@@ -157,7 +173,9 @@ La transmisión usa el codec Opus que WebRTC negocia por defecto, optimizado par
 
 ## Limitaciones conocidas
 
-**Transmisión en segundo plano:** cuando la app está en primer plano en Chrome para Android, el micrófono se mantiene activo. Si el usuario minimiza Chrome o cambia a otra app nativa (por ejemplo, la app de Google Slides), el sistema operativo puede suspender el proceso y cortar la transmisión. Esta es una limitación del navegador: solo las apps nativas Android pueden declarar un *foreground service* de audio que el sistema garantiza que no interrumpirá. Por esta razón, la presentación y el formulario se embeben dentro de la propia app en lugar de abrirse en apps externas.
+**Bloqueo de pantalla:** mientras el captador/a está transmitiendo, la app pide un *Screen Wake Lock* (`navigator.wakeLock`) para que la tablet **no se bloquee sola** aunque nadie toque la pantalla, igual que hace una app de video. El lock se libera al detener la transmisión y se vuelve a pedir automáticamente cuando la pestaña regresa a primer plano. Requiere HTTPS y un navegador compatible (Chrome para Android, Safari iOS 16.4+).
+
+**Transmisión en segundo plano:** cuando la app está en primer plano en Chrome para Android, el micrófono se mantiene activo. Si el usuario minimiza Chrome o cambia a otra app nativa (por ejemplo, la app de Google Slides), el sistema operativo puede suspender el proceso y cortar la transmisión. Esta es una limitación del navegador: solo las apps nativas Android pueden declarar un *foreground service* de audio que el sistema garantiza que no interrumpirá. Por esta razón, la presentación y el formulario se embeben dentro de la propia app en lugar de abrirse en apps externas. (El Wake Lock evita el bloqueo automático de pantalla, pero no impide que el SO suspenda la app si pasa a segundo plano.)
 
 **Reconexión no automática en el lado del coordinador:** si el celular del coordinador pierde conectividad, la instancia de `Peer` se destruye. Al recuperar la red, el coordinador debe recargar la app manualmente para obtener un nuevo código y que el captador/a se reconecte.
 
