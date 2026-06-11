@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>ISF Argentina · Monitor de Captación</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.4.7/peerjs.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -179,6 +180,18 @@
       text-align: center; display: none; margin-bottom: 10px;
       letter-spacing: 1px;
     }
+    .rec-name-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .rec-name-input {
+      width: 100%; font-size: 15px; padding: 12px 13px; margin-bottom: 12px;
+      border: 2px solid var(--border); border-radius: 11px; outline: none;
+      background: var(--bg); color: var(--ink); transition: border-color .2s;
+    }
+    .rec-name-input:focus { border-color: var(--blue); }
+    .conv-note { font-size: 13px; color: var(--amber); font-weight: 700; text-align: center; margin-top: 12px; }
+    .up-tag { font-size: 11px; font-weight: 700; margin-top: 3px; }
+    .up-pending { color: var(--amber); }
+    .up-ok      { color: var(--green); }
+    .up-err     { color: var(--red); }
 
     /* ─── RECORDINGS LIST ─────────────────────────────── */
     .rec-item {
@@ -221,30 +234,38 @@
       justify-content: center;
     }
 
-    /* Discreet button — only the captador knows to tap it */
+    /* Discreet but always-visible control — dark pill works on white or dark slides */
     .donor-menu {
-      position: absolute; top: 18px; right: 18px;
-      background: rgba(255,255,255,.10); color: rgba(255,255,255,.55);
-      border: none; border-radius: 10px;
-      width: 38px; height: 38px;
-      font-size: 18px; font-weight: 900; cursor: pointer;
+      position: absolute; top: 16px; right: 16px;
+      background: rgba(13,27,42,.72); color: #fff;
+      border: 1.5px solid rgba(255,255,255,.85);
+      border-radius: 11px;
+      width: 44px; height: 40px;
+      font-size: 20px; font-weight: 900; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
-      letter-spacing: 2px; transition: background .15s;
-      z-index: 10;
+      letter-spacing: 2px; line-height: 1;
+      box-shadow: 0 2px 12px rgba(0,0,0,.45);
+      transition: background .15s, transform .1s;
+      z-index: 20;
     }
-    .donor-menu:hover { background: rgba(255,255,255,.18); }
+    .donor-menu:hover  { background: rgba(13,27,42,.92); }
+    .donor-menu:active { transform: scale(.93); }
 
-    /* Transmitting indicator — small, top-left */
+    /* Transmitting indicator — pill so it reads on any background */
     .tx-dot {
-      position: absolute; top: 22px; left: 18px;
-      display: flex; align-items: center; gap: 6px;
-      font-size: 11px; color: rgba(255,255,255,.4);
-      pointer-events: none;
+      position: absolute; top: 18px; left: 16px;
+      display: flex; align-items: center; gap: 7px;
+      font-size: 11px; font-weight: 700; letter-spacing: .5px;
+      color: #fff; background: rgba(13,27,42,.72);
+      padding: 6px 11px; border-radius: 20px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.45);
+      pointer-events: none; z-index: 20;
     }
     .tx-dot::before {
       content: '';
-      width: 7px; height: 7px; border-radius: 50%;
+      width: 8px; height: 8px; border-radius: 50%;
       background: #2ECC71;
+      box-shadow: 0 0 0 2px rgba(46,204,113,.35);
       animation: blink 2s infinite;
       flex-shrink: 0;
     }
@@ -466,6 +487,8 @@
   <!-- Recording controls -->
   <div class="card">
     <div class="clabel">⏺ Grabación</div>
+    <label class="rec-name-label" for="c-capname">Nombre del captador/a (para identificar el audio)</label>
+    <input class="rec-name-input" id="c-capname" type="text" placeholder="Ej.: María González" autocomplete="off">
     <div class="rec-timer" id="c-timer">● 00:00</div>
     <div class="btn-row">
       <button class="btn btn-red" id="c-btn-start" onclick="startRec()" disabled>
@@ -475,6 +498,7 @@
         ⏹ Detener
       </button>
     </div>
+    <div class="conv-note" id="c-conv-note" style="display:none">⏳ Convirtiendo a MP3…</div>
   </div>
 
   <!-- Recordings list -->
@@ -624,6 +648,7 @@ let recorder   = null;
 let recChunks  = [];
 let recs       = [];
 let recStart   = 0;
+let recCapName = '';
 let timerID    = null;
 let volAnimID  = null;
 let audCtx     = null;
@@ -634,6 +659,13 @@ let capCode    = '';
 let reconnTries = 0;
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
+
+// ══════════════════════════════════════════════════════════════
+//  GUARDADO AUTOMÁTICO EN GOOGLE DRIVE (opcional)
+//  Pegá acá la URL del Apps Script (ver archivo "GuardarEnDrive.gs"
+//  y las instrucciones). Mientras esté vacío (''), los audios solo
+//  se descargan manualmente — el guardado en Drive queda apagado.
+const UPLOAD_URL = '';
 
 // ══════════════════════════════════════════════════════════════
 //  Presentación de Google Slides que ve el donante.
@@ -865,10 +897,11 @@ function copyCode() {
 function startRec() {
   if (!rstream) return;
   recChunks = [];
-  const mime = ['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg']
+  recCapName = ($('c-capname').value || '').trim();
+  const mime = ['audio/webm;codecs=opus','audio/webm','audio/ogg','audio/mp4']
     .find(m => MediaRecorder.isTypeSupported(m)) || '';
   try {
-    recorder = new MediaRecorder(rstream, { mimeType: mime || undefined, audioBitsPerSecond: 32000 });
+    recorder = new MediaRecorder(rstream, { mimeType: mime || undefined, audioBitsPerSecond: 48000 });
   } catch (_) { recorder = new MediaRecorder(rstream); }
   recorder.ondataavailable = e => { if (e.data.size > 0) recChunks.push(e.data); };
   recorder.onstop = saveRec;
@@ -891,35 +924,111 @@ function stopRec() {
   clearInterval(timerID); timerID = null;
   $('c-btn-stop').style.display  = 'none';
   $('c-btn-start').style.display = '';
-  $('c-btn-start').disabled      = !rstream;
+  $('c-btn-start').disabled      = true;   // re-enabled after conversion
   $('c-timer').style.display     = 'none';
 }
 
-function saveRec() {
-  const mime = recChunks[0]?.type || 'audio/webm';
-  const blob = new Blob(recChunks, { type: mime });
-  const url  = URL.createObjectURL(blob);
+function slug(s) {
+  return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-zA-Z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40) || 'sin-nombre';
+}
+
+// webm/opus → MP3 (mono, 64 kbps) so it plays everywhere on Windows
+async function blobToMp3(blob) {
+  const arrayBuf = await blob.arrayBuffer();
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  const audioBuf = await ac.decodeAudioData(arrayBuf);
+  ac.close();
+  const sr  = audioBuf.sampleRate;
+  const ch0 = audioBuf.getChannelData(0);
+  const ch1 = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : null;
+  const n = ch0.length;
+  const samples = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = ch1 ? (ch0[i] + ch1[i]) / 2 : ch0[i];
+    s = Math.max(-1, Math.min(1, s));
+    samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  const enc = new lamejs.Mp3Encoder(1, sr, 64);
+  const block = 1152, data = [];
+  for (let i = 0; i < samples.length; i += block) {
+    const buf = enc.encodeBuffer(samples.subarray(i, i + block));
+    if (buf.length > 0) data.push(new Int8Array(buf));
+  }
+  const end = enc.flush();
+  if (end.length > 0) data.push(new Int8Array(end));
+  return new Blob(data, { type: 'audio/mpeg' });
+}
+
+async function saveRec() {
   const dur  = Math.round((Date.now() - recStart) / 1000);
   const n    = new Date();
   const pad  = x => String(x).padStart(2,'0');
-  const ext  = mime.includes('mp4') ? 'mp4' : 'webm';
-  const name = `ISF-${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}h${pad(n.getMinutes())}.${ext}`;
-  recs.unshift({ url, name, dur, t: n });
+  const stamp = `${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}h${pad(n.getMinutes())}`;
+  const name = `ISF-${slug(recCapName)}-${stamp}.mp3`;
+
+  $('c-conv-note').style.display = 'block';
+  let blob, url;
+  try {
+    const webm = new Blob(recChunks, { type: recChunks[0]?.type || 'audio/webm' });
+    blob = await blobToMp3(webm);
+    url  = URL.createObjectURL(blob);
+  } catch (e) {
+    // Fallback: keep the original recording if MP3 conversion fails
+    blob = new Blob(recChunks, { type: recChunks[0]?.type || 'audio/webm' });
+    url  = URL.createObjectURL(blob);
+  }
+  $('c-conv-note').style.display = 'none';
+  $('c-btn-start').disabled = !rstream;
+
+  const rec = { url, blob, name, dur, t: n, capName: recCapName, up: UPLOAD_URL ? 'pending' : null };
+  recs.unshift(rec);
+  renderRecs();
+
+  if (UPLOAD_URL) uploadToDrive(rec);
+}
+
+// Sends the MP3 to a Google Apps Script that saves it in ISF's Drive folder.
+async function uploadToDrive(rec) {
+  try {
+    const b64 = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload  = () => res(String(r.result).split(',')[1]);
+      r.onerror = rej;
+      r.readAsDataURL(rec.blob);
+    });
+    await fetch(UPLOAD_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ name: rec.name, captador: rec.capName, b64 })
+    });
+    rec.up = 'ok';        // no-cors response is opaque; treat reaching server as sent
+  } catch (_) {
+    rec.up = 'err';
+  }
   renderRecs();
 }
 
 function renderRecs() {
   if (!recs.length) return;
   $('c-recs-card').style.display = 'block';
-  $('c-recs-list').innerHTML = recs.map((r, i) => `
+  $('c-recs-list').innerHTML = recs.map((r, i) => {
+    const upTag = r.up === 'pending' ? '<div class="up-tag up-pending">⏳ Subiendo a Drive…</div>'
+               :  r.up === 'ok'      ? '<div class="up-tag up-ok">✓ Guardado en Drive</div>'
+               :  r.up === 'err'     ? '<div class="up-tag up-err">⚠ No se pudo subir (descargá manual)</div>'
+               :  '';
+    const who = r.capName ? r.capName : `Grabación ${recs.length - i}`;
+    return `
     <div class="rec-item">
       <div>
-        <div class="rec-name">Grabación ${recs.length - i}</div>
+        <div class="rec-name">${who}</div>
         <div class="rec-meta">${r.t.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})} · ${fmtDur(r.dur)}</div>
+        ${upTag}
       </div>
-      <button class="btn-dl" onclick="dlRec(${i})">⬇ Guardar</button>
-    </div>
-  `).join('');
+      <button class="btn-dl" onclick="dlRec(${i})">⬇ Bajar</button>
+    </div>`;
+  }).join('');
 }
 
 function dlRec(i) {
