@@ -251,6 +251,23 @@
     .donor-menu:hover  { background: rgba(13,27,42,.92); }
     .donor-menu:active { transform: scale(.93); }
 
+    /* Discreet direct-to-form button — top-left, same pill style */
+    .donor-form-btn {
+      position: absolute; top: 16px; left: 16px;
+      background: rgba(13,27,42,.72); color: #fff;
+      border: 1.5px solid rgba(255,255,255,.85);
+      border-radius: 11px;
+      width: 44px; height: 40px;
+      font-size: 18px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      line-height: 1;
+      box-shadow: 0 2px 12px rgba(0,0,0,.45);
+      transition: background .15s, transform .1s;
+      z-index: 20;
+    }
+    .donor-form-btn:hover  { background: rgba(13,27,42,.92); }
+    .donor-form-btn:active { transform: scale(.93); }
+
     /* Transmitting indicator — pill so it reads on any background */
     .tx-dot {
       position: absolute; top: 18px; left: 16px;
@@ -348,19 +365,9 @@
       background: var(--border); margin: 0 auto 18px;
     }
 
-    .sheet-close {
-      width: 100%; margin-top: 10px;
-      background: var(--blue-lt); color: var(--blue);
-      border: none; border-radius: 14px; padding: 15px;
-      font-size: 15px; font-weight: 700; cursor: pointer;
-    }
-
-    .sheet-form-btn {
-      width: 100%; margin-top: 14px;
-      background: var(--green); color: #fff;
-      border: none; border-radius: 14px; padding: 16px;
-      font-size: 15.5px; font-weight: 800; cursor: pointer;
-      display: flex; align-items: center; justify-content: center; gap: 8px;
+    /* Stop button armed (awaiting confirmation tap) */
+    #cap-stop-btn.btn-confirm {
+      background: var(--red); color: #fff; border-color: var(--red);
     }
 
     /* ══════════════════════════════════════════════════
@@ -554,11 +561,11 @@
 <!-- ════════════════════ DONOR VIEW (tablet, mostrada al donante) ════════════════════ -->
 <div id="s-donor" class="screen">
 
+  <!-- Direct-to-form button (discreet, top-left) -->
+  <button class="donor-form-btn" onclick="openForm()" title="Formulario">📋</button>
+
   <!-- Discreet menu — only captador knows to tap it -->
   <button class="donor-menu" onclick="openSheet()" title="Controles">···</button>
-
-  <!-- Subtle live indicator -->
-  <div class="tx-dot">EN VIVO</div>
 
   <!-- Embedded Google Slides (shown when SLIDES_URL is configured) -->
   <iframe id="slides-frame"
@@ -612,13 +619,10 @@
     <div class="vol-track"><div class="vol-fill" id="sheet-vol-fill"></div></div>
   </div>
 
-  <button class="sheet-form-btn" onclick="openForm()">📝 Abrir formulario de donación</button>
-
-  <div class="btn-row" style="margin-top:12px">
+  <div class="btn-row" style="margin-top:14px">
     <button class="btn btn-ghost" onclick="goFullscreen()">⛶ Pantalla completa</button>
-    <button class="btn btn-ghost" onclick="capDisconnect()">✕ Detener</button>
+    <button class="btn btn-ghost" id="cap-stop-btn" onclick="confirmStop()">✕ Detener</button>
   </div>
-  <button class="sheet-close" onclick="closeSheet()">↩ Volver a la pantalla del donante</button>
 </div>
 
 
@@ -650,6 +654,15 @@ let recs       = [];
 let recStart   = 0;
 let recCapName = '';
 let timerID    = null;
+let stopArmed  = false;
+let stopTmr    = null;
+let recCtx     = null;   // AudioContext used for capturing PCM while recording
+let recProc    = null;   // ScriptProcessorNode tapping the remote stream
+let recSource  = null;
+let recSink    = null;
+let pcmChunks  = [];      // captured Float32 PCM
+let pcmRate    = 48000;
+let recording  = false;
 let volAnimID  = null;
 let audCtx     = null;
 let resetTmr   = null;
@@ -720,7 +733,10 @@ function teardown() {
   reconnTries = 0;
   peer?.destroy();  peer = null;
   lstream?.getTracks().forEach(t => t.stop()); lstream = null;
-  if (recorder?.state !== 'inactive') recorder?.stop();
+  recording = false;
+  try { recProc?.disconnect(); recSource?.disconnect(); recSink?.disconnect(); } catch (_) {}
+  recCtx?.close(); recCtx = recProc = recSource = recSink = null;
+  pcmChunks = [];
   clearInterval(timerID); timerID = null;
   stopVol();
   audCtx?.close(); audCtx = null;
@@ -746,13 +762,37 @@ function resetCapForm() {
    BOTTOM SHEET
 ═══════════════════════════════════════════════ */
 function openSheet() {
+  resetStopBtn();
   $('sheet-bg').classList.add('open');
   $('cap-sheet').classList.add('open');
 }
 
 function closeSheet() {
+  resetStopBtn();
   $('sheet-bg').classList.remove('open');
   $('cap-sheet').classList.remove('open');
+}
+
+// Two-tap confirmation so a stray tap never cuts the transmission
+function confirmStop() {
+  const b = $('cap-stop-btn');
+  if (stopArmed) {
+    clearTimeout(stopTmr);
+    resetStopBtn();
+    capDisconnect();
+    return;
+  }
+  stopArmed = true;
+  b.textContent = '¿Seguro? Tocá de nuevo';
+  b.classList.add('btn-confirm');
+  stopTmr = setTimeout(resetStopBtn, 3000);
+}
+
+function resetStopBtn() {
+  stopArmed = false;
+  clearTimeout(stopTmr);
+  const b = $('cap-stop-btn');
+  if (b) { b.textContent = '✕ Detener'; b.classList.remove('btn-confirm'); }
 }
 
 /* ═══════════════════════════════════════════════
@@ -896,16 +936,27 @@ function copyCode() {
 ═══════════════════════════════════════════════ */
 function startRec() {
   if (!rstream) return;
-  recChunks = [];
   recCapName = ($('c-capname').value || '').trim();
-  const mime = ['audio/webm;codecs=opus','audio/webm','audio/ogg','audio/mp4']
-    .find(m => MediaRecorder.isTypeSupported(m)) || '';
-  try {
-    recorder = new MediaRecorder(rstream, { mimeType: mime || undefined, audioBitsPerSecond: 48000 });
-  } catch (_) { recorder = new MediaRecorder(rstream); }
-  recorder.ondataavailable = e => { if (e.data.size > 0) recChunks.push(e.data); };
-  recorder.onstop = saveRec;
-  recorder.start(500);
+  pcmChunks = [];
+  recording = true;
+
+  // Route the remote stream through Web Audio and capture PCM directly.
+  // Recording a remote WebRTC stream straight into MediaRecorder yields
+  // silence in Chrome — tapping the graph avoids that.
+  recCtx    = new (window.AudioContext || window.webkitAudioContext)();
+  pcmRate   = recCtx.sampleRate;
+  recSource = recCtx.createMediaStreamSource(rstream);
+  recProc   = recCtx.createScriptProcessor(4096, 1, 1);
+  recSink   = recCtx.createGain();
+  recSink.gain.value = 0;                 // silent: don't double the coordinator's audio
+  recSource.connect(recProc);
+  recProc.connect(recSink);
+  recSink.connect(recCtx.destination);    // keeps the processor pulling samples
+  recProc.onaudioprocess = e => {
+    if (!recording) return;
+    pcmChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  };
+
   recStart = Date.now();
   $('c-btn-start').style.display = 'none';
   $('c-btn-stop').disabled       = false;
@@ -919,13 +970,32 @@ function startRec() {
   }, 1000);
 }
 
-function stopRec() {
-  if (recorder?.state !== 'inactive') recorder.stop();
+async function stopRec() {
+  if (!recording) return;
+  recording = false;
   clearInterval(timerID); timerID = null;
   $('c-btn-stop').style.display  = 'none';
   $('c-btn-start').style.display = '';
   $('c-btn-start').disabled      = true;   // re-enabled after conversion
   $('c-timer').style.display     = 'none';
+
+  const dur = Math.round((Date.now() - recStart) / 1000);
+
+  // Tear down the capture graph
+  try { recProc.disconnect(); recSource.disconnect(); recSink.disconnect(); } catch (_) {}
+  const sr = pcmRate;
+  const chunks = pcmChunks; pcmChunks = [];
+  try { await recCtx.close(); } catch (_) {}
+  recCtx = recProc = recSource = recSink = null;
+
+  // Flatten captured PCM
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const pcm = new Float32Array(total);
+  let off = 0;
+  for (const c of chunks) { pcm.set(c, off); off += c.length; }
+
+  await saveRec(pcm, sr, dur);
 }
 
 function slug(s) {
@@ -933,20 +1003,12 @@ function slug(s) {
     .replace(/[^a-zA-Z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40) || 'sin-nombre';
 }
 
-// webm/opus → MP3 (mono, 64 kbps) so it plays everywhere on Windows
-async function blobToMp3(blob) {
-  const arrayBuf = await blob.arrayBuffer();
-  const ac = new (window.AudioContext || window.webkitAudioContext)();
-  const audioBuf = await ac.decodeAudioData(arrayBuf);
-  ac.close();
-  const sr  = audioBuf.sampleRate;
-  const ch0 = audioBuf.getChannelData(0);
-  const ch1 = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : null;
-  const n = ch0.length;
+// Float32 PCM → MP3 (mono, 64 kbps) — plays everywhere on Windows, stays small
+function pcmToMp3(pcm, sr) {
+  const n = pcm.length;
   const samples = new Int16Array(n);
   for (let i = 0; i < n; i++) {
-    let s = ch1 ? (ch0[i] + ch1[i]) / 2 : ch0[i];
-    s = Math.max(-1, Math.min(1, s));
+    let s = Math.max(-1, Math.min(1, pcm[i]));
     samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
   }
   const enc = new lamejs.Mp3Encoder(1, sr, 64);
@@ -960,24 +1022,17 @@ async function blobToMp3(blob) {
   return new Blob(data, { type: 'audio/mpeg' });
 }
 
-async function saveRec() {
-  const dur  = Math.round((Date.now() - recStart) / 1000);
+async function saveRec(pcm, sr, dur) {
   const n    = new Date();
   const pad  = x => String(x).padStart(2,'0');
   const stamp = `${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}h${pad(n.getMinutes())}`;
   const name = `ISF-${slug(recCapName)}-${stamp}.mp3`;
 
   $('c-conv-note').style.display = 'block';
-  let blob, url;
-  try {
-    const webm = new Blob(recChunks, { type: recChunks[0]?.type || 'audio/webm' });
-    blob = await blobToMp3(webm);
-    url  = URL.createObjectURL(blob);
-  } catch (e) {
-    // Fallback: keep the original recording if MP3 conversion fails
-    blob = new Blob(recChunks, { type: recChunks[0]?.type || 'audio/webm' });
-    url  = URL.createObjectURL(blob);
-  }
+  // Yield so the "Convirtiendo…" note paints before the encode blocks the thread
+  await new Promise(r => setTimeout(r, 30));
+  const blob = pcmToMp3(pcm, sr);
+  const url  = URL.createObjectURL(blob);
   $('c-conv-note').style.display = 'none';
   $('c-btn-start').disabled = !rstream;
 
