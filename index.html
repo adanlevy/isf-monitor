@@ -449,6 +449,9 @@
       <div class="vol-label">Nivel de audio recibido</div>
       <div class="vol-track"><div class="vol-fill" id="c-vol-fill"></div></div>
     </div>
+    <button class="btn btn-ghost" id="c-btn-disc" onclick="discCaptador()" disabled style="margin-top:12px">
+      ✕ Cortar transmisión del captador/a
+    </button>
   </div>
 
   <!-- Recording controls -->
@@ -640,9 +643,10 @@ let wakeLock       = null;   // Screen Wake Lock — mantiene la tablet despiert
 let dataConn       = null;   // canal de datos PeerJS — avisa la desconexión deliberada al instante
 let recAutoStopTmr = null;   // detiene la grabación 90 s después de que el captador se desconecta
 let activeCoordCall = null;  // llamada vigente en el coordinador (ignora eventos de llamadas viejas)
+let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -718,7 +722,8 @@ function teardown() {
   activeCoordCall = null;
   reconnTries = 0;
   try { dataConn?.close(); } catch (_) {}
-  dataConn = null;
+  try { coordDataConn?.close(); } catch (_) {}
+  dataConn = coordDataConn = null;
   peer?.destroy();  peer = null;
   lstream?.getTracks().forEach(t => t.stop()); lstream = null;
   recording = false;
@@ -869,10 +874,10 @@ function releaseWakeLock() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  // Reactivar el lock al volver a primer plano, solo mientras el
-  // captador/a está en la vista de donante transmitiendo.
-  if (document.visibilityState === 'visible' &&
-      $('s-donor').classList.contains('on') && peer) {
+  // Reactivar el lock al volver a primer plano, mientras haya una sesión
+  // activa (captador/a en la vista de donante, o coordinador/a escuchando).
+  if (document.visibilityState === 'visible' && peer &&
+      ($('s-donor').classList.contains('on') || $('s-coord').classList.contains('on'))) {
     requestWakeLock();
   }
 });
@@ -882,6 +887,7 @@ document.addEventListener('visibilitychange', () => {
 ═══════════════════════════════════════════════ */
 function initCoord() {
   go('s-coord');
+  requestWakeLock();   // que el celular no se bloquee solo mientras escucha/graba
   const dl = $('c-drive-link');
   if (DRIVE_FOLDER_URL && DRIVE_FOLDER_URL.trim()) {
     dl.href = DRIVE_FOLDER_URL;
@@ -902,10 +908,11 @@ function spawnCoordPeer(code) {
 
   peer.on('open', () => setCS('wait', 'Esperando al captador/a...'));
 
-  // Canal de datos: el captador/a avisa por acá apenas toca "Detener",
-  // así la desconexión deliberada se detecta al instante (sin esperar
-  // a que se caiga la conexión ICE de audio).
+  // Canal de datos con el captador/a. Sirve en los dos sentidos:
+  //  • el captador/a manda 'bye' al tocar "Detener" → detección instantánea
+  //  • el coordinador/a puede mandar 'stop' para cortarle la transmisión
   peer.on('connection', conn => {
+    coordDataConn = conn;
     conn.on('data', d => { if (d === 'bye') coordDisconnected(); });
   });
 
@@ -929,6 +936,7 @@ function spawnCoordPeer(code) {
     clearTimeout(recAutoStopTmr); recAutoStopTmr = null;
     coordConnected = true;
     $('c-btn-start').disabled = false;
+    $('c-btn-disc').disabled  = false;
     setCS('ok', wasRecording ? 'Captador/a reconectado/a · grabación retomada ✓'
                              : 'Captador/a conectado/a ✓');
 
@@ -1014,8 +1022,28 @@ function coordDisconnected() {
   }
 
   $('c-vol-wrap').style.display = 'none';
+  $('c-btn-disc').disabled = true;
   rstream = null;
   stopVol();
+}
+
+// El coordinador/a corta la transmisión: le avisa al captador/a por el canal
+// de datos (su micrófono se apaga y vuelve a la pantalla de inicio) y cierra
+// su propio lado. La sesión sigue viva para recibir a otro captador/a.
+function discCaptador() {
+  try { coordDataConn?.send('stop'); } catch (_) {}
+  if (recording) stopRec();              // finalizar la grabación en curso
+  coordConnected = false;
+  activeCoordCall = null;
+  clearTimeout(recAutoStopTmr); recAutoStopTmr = null;
+  clearTimeout(coordDropTmr);
+  $('c-audio').srcObject = null;
+  rstream = null;
+  stopVol();
+  $('c-vol-wrap').style.display = 'none';
+  $('c-btn-start').disabled = true;
+  $('c-btn-disc').disabled  = true;
+  setCS('wait', 'Transmisión finalizada. Esperando otro captador/a…');
 }
 
 function setCS(type, msg) {
@@ -1274,8 +1302,12 @@ async function capConnect() {
 
   peer.on('open', () => {
     setSheetStatus('wait', 'Llamando al coordinador...');
-    // Canal de datos para avisar la desconexión deliberada al instante
-    try { dataConn = peer.connect('isfa' + capCode); } catch (_) {}
+    // Canal de datos: avisa la desconexión al instante y recibe la orden
+    // del coordinador/a para cortar la transmisión ('stop').
+    try {
+      dataConn = peer.connect('isfa' + capCode);
+      dataConn.on('data', d => { if (d === 'stop') capDisconnect(); });
+    } catch (_) {}
     placeCall();
   });
 
@@ -1345,6 +1377,10 @@ function scheduleReconnect() {
 function capDisconnect() {
   // Avisar al coordinador/a al instante, antes de destruir el peer
   try { dataConn?.send('bye'); } catch (_) {}
+  // Cortar el micrófono YA (no esperar al teardown) para que el indicador
+  // de "grabando" del navegador/sistema desaparezca de inmediato.
+  try { lstream?.getTracks().forEach(t => t.stop()); } catch (_) {}
+  stopVol();           // cierra el AudioContext del medidor — otra referencia al mic
   closeSheet();
   exitFullscreen();
   go('s-cap');
@@ -1394,6 +1430,10 @@ function startVol(stream, fillId, wrapId) {
 function stopVol() {
   cancelAnimationFrame(volAnimID);
   volAnimID = null;
+  // Cerrar el AudioContext libera la captura del micrófono. Si no se cierra
+  // (p. ej. al reconectar, donde se crea uno nuevo), queda una referencia viva
+  // que mantiene encendido el indicador de "grabando" del navegador/sistema.
+  if (audCtx) { try { audCtx.close(); } catch (_) {} audCtx = null; }
 }
 
 /* ═══════════════════════════════════════════════
