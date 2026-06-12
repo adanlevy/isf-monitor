@@ -649,7 +649,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.3.2';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -1438,7 +1438,7 @@ function placeCall() {
         dropTmr = setTimeout(() => {
           const s = pc.iceConnectionState;
           if (s !== 'connected' && s !== 'completed') retry();
-        }, 2000);
+        }, 1200);
       }
     };
   }
@@ -1446,8 +1446,11 @@ function placeCall() {
   call.on('close', retry);
   call.on('error', retry);
 
-  // Si en 7 s no se estableció la conexión REAL, reintentar (no marcar vivo).
-  const t = setTimeout(() => { if (!live) retry(); }, 7000);
+  // Si no se estableció la conexión REAL en el tiempo límite, reintentar (no
+  // marcar vivo). Para RE-establecer una sesión ya conectada usamos un límite
+  // corto (más dinámico); en la conexión inicial damos más margen por si la red
+  // celular tarda en armar la ruta TURN.
+  const t = setTimeout(() => { if (!live) retry(); }, everConnected ? 3500 : 6000);
 }
 
 function scheduleReconnect() {
@@ -1463,10 +1466,13 @@ function scheduleReconnect() {
     setSheetStatus('err', 'No se pudo conectar. Verificá el código y reintentá.');
     return;
   }
-  const delay = Math.min(1500 + (reconnTries - 1) * 400, 4000);   // backoff hasta 4 s
-  setSheetStatus('wait', reconnTries <= 8
+  // Re-establecer una sesión que YA estuvo conectada: reintento rápido y FIJO
+  // (~1 s), para reenganchar apenas el coordinador/a vuelve del bloqueo, bien en
+  // sync. En la conexión inicial: backoff progresivo hasta 4 s.
+  const delay = everConnected ? 1000 : Math.min(1500 + (reconnTries - 1) * 400, 4000);
+  setSheetStatus('wait', (!everConnected && reconnTries <= 8)
     ? 'Reconectando… (intento ' + reconnTries + ')'
-    : 'Esperando al coordinador/a… (reconectando)');
+    : 'Reconectando con el coordinador/a…');
   clearTimeout(resetTmr);
   resetTmr = setTimeout(placeCall, delay);
 }
