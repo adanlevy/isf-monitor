@@ -27,7 +27,7 @@ La aplicación tiene dos modos que corren en el mismo archivo HTML:
 - Al conectar, la pantalla pasa a una vista de donante: muestra la presentación de Google Slides de ISF Argentina embebida, a pantalla completa.
 - Desde esa misma vista se puede acceder al formulario real de donación (`isf-argentina.org/formularios/donar`) embebido, sin salir de la app.
 - Un menú discreto (botón `···`, esquina superior derecha) da acceso a los controles técnicos: estado de la transmisión, nivel de micrófono, pantalla completa, y detener con confirmación de dos pasos.
-- Reconexión automática si el audio se interrumpe por un problema de red (hasta 8 intentos con 1,5 s de espera entre cada uno).
+- Reconexión automática y persistente si el audio se interrumpe (por red, o porque el coordinador/a bloqueó el teléfono): sigue reintentando sin volver a la pantalla de inicio y se reconecta solo cuando el otro lado vuelve.
 
 ---
 
@@ -51,7 +51,9 @@ El audio viaja directamente entre el celular del coordinador y la tablet del cap
 
 **NAT traversal con STUN + TURN:** las redes móviles usan NAT simétrico, que bloquea las conexiones P2P directas. Con STUN solo, una fracción significativa de las conexiones en red celular fallan a los pocos segundos. Se incluyeron servidores TURN que actúan como relay cuando no hay ruta directa disponible. Las credenciales de producción recomendadas son de ExpressTURN o Metered (plan gratuito, 1000 GB/mes); el repositorio incluye credenciales `openrelay` solo para pruebas rápidas.
 
-**Reconexión automática:** `placeCall()` observa `RTCPeerConnection.iceConnectionState`. Si el estado pasa a `failed` o `disconnected`, `scheduleReconnect()` reintenta la llamada con backoff lineal de 1,5 s, hasta 8 intentos. En el lado del coordinador, `watchCoordConn()` hace el mismo seguimiento y dispara `coordDisconnected()` después de un período de gracia de 1,5 s para evitar falsos positivos por blips de red.
+**Reconexión automática:** `placeCall()` observa `RTCPeerConnection.iceConnectionState`. Si el estado pasa a `failed` o `disconnected`, `scheduleReconnect()` reintenta la llamada con backoff (1,5 → 4 s). En la conexión **inicial** da hasta 8 intentos antes de mostrar error; pero una vez que se conectó al menos una vez (`everConnected`), reintenta **indefinidamente** sin abandonar, porque el otro lado pudo haber bloqueado el teléfono y va a volver. En el lado del coordinador, `watchCoordConn()` hace el mismo seguimiento y dispara `coordDisconnected()` después de un período de gracia de 1,5 s.
+
+**Recuperación tras bloqueo de pantalla (`visibilitychange`):** cuando un dispositivo se bloquea o pasa a segundo plano, el navegador congela la página y se corta el WebRTC. Al volver a primer plano, un listener de `visibilitychange` reactiva el Wake Lock y **re-establece la conexión solo**: el coordinador/a vuelve a registrar su mismo código en el servidor (`peer.reconnect()`, o recrea el `Peer` con el mismo código si fue destruido) y el captador/a reanuda los reintentos de llamada. Así no hay que reconectar a mano de ningún lado.
 
 **Detección instantánea de la desconexión deliberada:** cuando el captador/a toca "Detener", el medio WebRTC puede tardar varios segundos en cerrarse a nivel ICE. Para que la coordinación se entere al instante, se abre además un `DataConnection` de PeerJS entre ambos dispositivos; el captador/a envía un mensaje `'bye'` por ese canal justo antes de destruir el `Peer`, y el coordinador/a reacciona de inmediato. Si en cambio se pierde la señal sin aviso, la detección recae en el seguimiento de ICE con el período de gracia de 1,5 s.
 
@@ -132,7 +134,7 @@ const ICE_SERVERS = [ ... ];
 // Versión incremental de la app. Subir este número en cada cambio;
 // se muestra en el pie de cada pantalla para confirmar que estás
 // usando la última versión publicada.
-const APP_VERSION = '1.2.2';
+const APP_VERSION = '1.3.0';
 ```
 
 ---
@@ -178,9 +180,7 @@ La transmisión usa el codec Opus que WebRTC negocia por defecto, optimizado par
 
 **Transmisión / escucha en segundo plano:** cuando la app está en primer plano, el micrófono (captador) y el audio recibido (coordinador) se mantienen activos. Si el usuario **bloquea manualmente** el dispositivo (botón de encendido) o cambia a otra app, el sistema operativo puede suspender el proceso del navegador y cortar la transmisión o la grabación. Esta es una limitación del navegador: solo las apps nativas pueden declarar un *foreground service* de audio que el sistema garantiza no interrumpir. El Wake Lock evita el **bloqueo automático por inactividad** (el caso más común), pero no impide la suspensión si el dispositivo se bloquea a mano o la app pasa a segundo plano. Por eso la presentación y el formulario se embeben dentro de la propia app en lugar de abrirse en apps externas.
 
-**Indicador de micrófono del sistema:** mientras el micrófono está activo, el navegador muestra un ícono de grabación en la pestaña y Android/iPadOS muestran un punto (verde/naranja) en la esquina de la pantalla. Es una **medida de privacidad del sistema operativo que una web no puede ocultar ni desactivar**; desaparece por sí solo unos segundos después de que el micrófono se libera. La app corta el micrófono de inmediato al desconectar (`MediaStreamTrack.stop()` + cierre del `AudioContext`) para que el indicador se apague lo antes posible.
-
-**Reconexión no automática en el lado del coordinador:** si el celular del coordinador pierde conectividad, la instancia de `Peer` se destruye. Al recuperar la red, el coordinador debe recargar la app manualmente para obtener un nuevo código y que el captador/a se reconecte.
+**Indicador de micrófono del sistema:** mientras el micrófono está activo, el navegador muestra un ícono de grabación en la pestaña y Android/iPadOS muestran un punto (verde/naranja) en la esquina de la pantalla. Es una **medida de privacidad del sistema operativo que una web no puede ocultar ni desactivar**. En algunos equipos el ícono de la pestaña queda "pegado" aunque el micrófono ya esté apagado; por eso, al detener la transmisión deliberadamente, el captador/a **recarga la página** (`location.reload()`), que destruye toda referencia al micrófono y garantiza que el indicador se apague. (Las caídas transitorias no recargan: se reintenta la reconexión.)
 
 **Subida a Drive con respuesta opaca:** por la restricción de CORS de Apps Script, la app no puede confirmar definitivamente si el archivo llegó. Si hay error de red durante la subida, la grabación sigue disponible para descarga manual.
 
