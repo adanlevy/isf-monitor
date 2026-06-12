@@ -649,7 +649,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -739,6 +739,7 @@ function teardown() {
   clearInterval(timerID); timerID = null;
   stopVol();
   audCtx?.close(); audCtx = null;
+  clearMediaSession();
   $('c-audio').srcObject = null;
   rstream = null;
   pendingAudio = null;
@@ -902,6 +903,38 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ═══════════════════════════════════════════════
+   MEDIA SESSION (coordinador)
+   La misma táctica que usan los sitios de radio online (p. ej. una emisora):
+   declarar una sesión de medios "reproduciendo" hace que Android/Chrome traten
+   la pestaña como reproducción de audio y NO la congelen al bloquear la
+   pantalla, manteniendo viva la conexión y el audio del captador/a.
+   Es "mejor esfuerzo": funciona en la mayoría de los Android, pero no está
+   100% garantizado porque WebRTC no es idéntico a un stream de archivo.
+═══════════════════════════════════════════════ */
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title:  'Monitor de Captación — escucha en vivo',
+      artist: 'Ingeniería Sin Fronteras Argentina',
+    });
+    navigator.mediaSession.playbackState = 'playing';
+    const noop = () => {};
+    ['play', 'pause', 'stop'].forEach(a => {
+      try { navigator.mediaSession.setActionHandler(a, noop); } catch (_) {}
+    });
+  } catch (_) {}
+}
+
+function clearMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  try {
+    navigator.mediaSession.playbackState = 'none';
+    navigator.mediaSession.metadata = null;
+  } catch (_) {}
+}
+
+/* ═══════════════════════════════════════════════
    COORDINATOR
 ═══════════════════════════════════════════════ */
 function initCoord() {
@@ -966,7 +999,7 @@ function spawnCoordPeer(code) {
       audio.srcObject = stream;
       const p = audio.play();
       if (p !== undefined) {
-        p.catch(() => {
+        p.then(() => setupMediaSession()).catch(() => {
           pendingAudio = audio;
           $('autoplay-banner').style.display = 'block';
           setCS('ok', 'Captador/a conectado/a · Tocá el banner amarillo');
@@ -1076,7 +1109,7 @@ function setCS(type, msg) {
 }
 
 function activateAudio() {
-  pendingAudio?.play();
+  pendingAudio?.play().then(() => setupMediaSession()).catch(() => {});
   pendingAudio = null;
   $('autoplay-banner').style.display = 'none';
   setCS('ok', 'Captador/a conectado/a ✓');
@@ -1367,37 +1400,54 @@ function placeCall() {
   if (!peer || peer.destroyed || !lstream) return;
 
   const call = peer.call('isfa' + capCode, lstream);
-  let connected = false;
+  let live = false, retried = false, dropTmr = null;
 
   const markLive = () => {
-    if (connected) return;
-    connected = true;
+    if (live) return;
+    live = true;
     everConnected = true;
     capLive = true;
     reconnTries = 0;
-    clearTimeout(t);
+    clearTimeout(t); clearTimeout(dropTmr);
     setSheetStatus('ok', '📡 Transmitiendo en vivo...');
     startVol(lstream, 'sheet-vol-fill', 'sheet-vol-wrap');
   };
 
-  const t = setTimeout(markLive, 2000);
-  call.on('stream', markLive);
+  // Reintenta este intento de llamada (una sola vez por llamada).
+  const retry = () => {
+    if (retried) return;
+    retried = true;
+    capLive = false;
+    clearTimeout(t); clearTimeout(dropTmr);
+    scheduleReconnect();
+  };
 
-  // Watch the underlying ICE connection for drops
+  // El coordinador responde SIN devolver stream, así que la ÚNICA señal real
+  // de conexión es el estado ICE. (Antes un timeout "ciego" marcaba "en vivo"
+  // a los 2 s aunque no hubiera conexión —p. ej. coordinador bloqueado—, y eso
+  // causaba el falso "conectado" y la discordancia de estado.)
   const pc = call.peerConnection;
   if (pc) {
     pc.oniceconnectionstatechange = () => {
       const st = pc.iceConnectionState;
-      if (st === 'connected' || st === 'completed') {
-        markLive();
-      } else if (st === 'failed' || st === 'disconnected') {
-        scheduleReconnect();
+      if (st === 'connected' || st === 'completed') { clearTimeout(dropTmr); markLive(); }
+      else if (st === 'failed') retry();
+      else if (st === 'disconnected') {
+        // Puede ser un blip momentáneo: confirmamos tras una breve gracia.
+        clearTimeout(dropTmr);
+        dropTmr = setTimeout(() => {
+          const s = pc.iceConnectionState;
+          if (s !== 'connected' && s !== 'completed') retry();
+        }, 2000);
       }
     };
   }
+  call.on('stream', markLive);   // por si en el futuro el coordinador devolviera stream
+  call.on('close', retry);
+  call.on('error', retry);
 
-  call.on('close', () => { clearTimeout(t); scheduleReconnect(); });
-  call.on('error', () => { clearTimeout(t); scheduleReconnect(); });
+  // Si en 7 s no se estableció la conexión REAL, reintentar (no marcar vivo).
+  const t = setTimeout(() => { if (!live) retry(); }, 7000);
 }
 
 function scheduleReconnect() {
