@@ -638,7 +638,10 @@ let resetTmr   = null;
 let pendingAudio = null;
 let formLoaded = false;
 let capCode    = '';
+let coordCode  = '';         // código de la sesión del coordinador (para re-crear el peer al volver de un bloqueo)
 let reconnTries = 0;
+let everConnected = false;   // captador: ya transmitió al menos una vez en esta sesión
+let capLive    = false;      // captador: ¿está transmitiendo ahora mismo?
 let wakeLock       = null;   // Screen Wake Lock — mantiene la tablet despierta mientras transmite
 let dataConn       = null;   // canal de datos PeerJS — avisa la desconexión deliberada al instante
 let recAutoStopTmr = null;   // detiene la grabación 90 s después de que el captador se desconecta
@@ -646,7 +649,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.2.2';
+const APP_VERSION = '1.3.0';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -721,6 +724,9 @@ function teardown() {
   coordConnected = false;
   activeCoordCall = null;
   reconnTries = 0;
+  everConnected = false;
+  capLive = false;
+  coordCode = '';
   try { dataConn?.close(); } catch (_) {}
   try { coordDataConn?.close(); } catch (_) {}
   dataConn = coordDataConn = null;
@@ -874,11 +880,24 @@ function releaseWakeLock() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  // Reactivar el lock al volver a primer plano, mientras haya una sesión
-  // activa (captador/a en la vista de donante, o coordinador/a escuchando).
-  if (document.visibilityState === 'visible' && peer &&
-      ($('s-donor').classList.contains('on') || $('s-coord').classList.contains('on'))) {
-    requestWakeLock();
+  if (document.visibilityState !== 'visible') return;
+  const onDonor = $('s-donor').classList.contains('on');
+  const onCoord = $('s-coord').classList.contains('on');
+  if (!onDonor && !onCoord) return;
+
+  // Reactivar el lock al volver a primer plano (sesión activa)
+  requestWakeLock();
+
+  // Auto-recuperar la conexión al volver de un bloqueo/segundo plano, para que
+  // NO haya que reestablecer a mano de ambos lados.
+  if (onCoord) {
+    // Coordinador/a: volver a registrar el mismo código en el servidor
+    if (!peer || peer.destroyed) { if (coordCode) spawnCoordPeer(coordCode); }
+    else if (peer.disconnected)  { try { peer.reconnect(); } catch (_) {} }
+  } else if (onDonor && peer && !peer.destroyed) {
+    // Captador/a: reconectar la señalización y volver a llamar si se cortó
+    if (peer.disconnected) { try { peer.reconnect(); } catch (_) {} }
+    if (!capLive) scheduleReconnect();
   }
 });
 
@@ -902,6 +921,7 @@ function initCoord() {
 }
 
 function spawnCoordPeer(code) {
+  coordCode = code;   // recordarlo para poder re-crear el peer al volver de un bloqueo
   peer = new Peer('isfa' + code, {
     config: { iceServers: ICE_SERVERS }
   });
@@ -975,7 +995,10 @@ function spawnCoordPeer(code) {
   });
 
   peer.on('disconnected', () => {
-    if (peer) { setCS('wait', 'Reconectando...'); peer.reconnect(); }
+    if (peer && !peer.destroyed) {
+      setCS('wait', 'Reconectando...');
+      try { peer.reconnect(); } catch (_) {}
+    }
   });
 }
 
@@ -1264,6 +1287,8 @@ async function capConnect() {
   goFullscreen();
   capCode = code;
   reconnTries = 0;
+  everConnected = false;
+  capLive = false;
 
   $('cap-btn').disabled = true;
 
@@ -1313,6 +1338,12 @@ async function capConnect() {
   });
 
   peer.on('error', err => {
+    // Si ya transmitimos alguna vez, esto es una caída temporal (p. ej. el
+    // coordinador/a bloqueó el teléfono): NO abandonamos, reintentamos.
+    if (everConnected && err.type !== 'unavailable-id') {
+      scheduleReconnect();
+      return;
+    }
     const msgs = {
       'peer-unavailable': 'Coordinador no encontrado. ¿Es correcto el código?',
       'network':          'Sin red. Verificá tu conexión.',
@@ -1322,6 +1353,11 @@ async function capConnect() {
     // Go back to setup and show error
     go('s-cap');
     showCapErr(msg);
+  });
+
+  // Si se cae la señalización (no la llamada), reconectar al servidor
+  peer.on('disconnected', () => {
+    if (peer && !peer.destroyed) { try { peer.reconnect(); } catch (_) {} }
   });
 }
 
@@ -1336,6 +1372,8 @@ function placeCall() {
   const markLive = () => {
     if (connected) return;
     connected = true;
+    everConnected = true;
+    capLive = true;
     reconnTries = 0;
     clearTimeout(t);
     setSheetStatus('ok', '📡 Transmitiendo en vivo...');
@@ -1365,29 +1403,37 @@ function placeCall() {
 function scheduleReconnect() {
   // Only retry while we're still meant to be transmitting
   if (!peer || peer.destroyed || !lstream) return;
-  if (reconnTries >= 8) {
-    setSheetStatus('err', 'Se perdió la conexión. Tocá "Detener" y reconectá.');
+  capLive = false;
+  reconnTries++;
+  // En la conexión inicial damos hasta 8 intentos y avisamos del error.
+  // Pero si YA habíamos conectado, seguimos reintentando sin rendirnos: el
+  // coordinador/a pudo bloquear el teléfono y va a volver. Así no hay que
+  // reestablecer a mano de ningún lado.
+  if (!everConnected && reconnTries > 8) {
+    setSheetStatus('err', 'No se pudo conectar. Verificá el código y reintentá.');
     return;
   }
-  reconnTries++;
-  setSheetStatus('wait', 'Reconectando… (intento ' + reconnTries + ')');
+  const delay = Math.min(1500 + (reconnTries - 1) * 400, 4000);   // backoff hasta 4 s
+  setSheetStatus('wait', reconnTries <= 8
+    ? 'Reconectando… (intento ' + reconnTries + ')'
+    : 'Esperando al coordinador/a… (reconectando)');
   clearTimeout(resetTmr);
-  resetTmr = setTimeout(placeCall, 1500);
+  resetTmr = setTimeout(placeCall, delay);
 }
 
 function capDisconnect() {
-  // Avisar al coordinador/a al instante, antes de destruir el peer
+  // Avisar al coordinador/a al instante, antes de soltar todo
   try { dataConn?.send('bye'); } catch (_) {}
-  // Cortar el micrófono YA (no esperar al teardown) para que el indicador
-  // de "grabando" del navegador/sistema desaparezca de inmediato.
+  // Cortar el micrófono y soltar el peer
   try { lstream?.getTracks().forEach(t => t.stop()); } catch (_) {}
-  stopVol();           // cierra el AudioContext del medidor — otra referencia al mic
-  closeSheet();
+  stopVol();
+  try { peer?.destroy(); } catch (_) {}
   exitFullscreen();
-  go('s-cap');
-  resetCapForm();
-  // dar un instante para que el 'bye' salga por el canal antes del teardown
-  setTimeout(teardown, 150);
+  // Recargar la página es la forma 100% confiable de que Chrome/Android suelten
+  // el indicador de micrófono de la pestaña: en algunos equipos queda "pegado"
+  // aunque el micrófono ya esté apagado. La recarga destruye toda referencia.
+  // El pequeño delay deja salir el 'bye' por el canal de datos.
+  setTimeout(() => location.reload(), 200);
 }
 
 function showCapErr(msg) {
