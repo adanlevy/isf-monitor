@@ -646,7 +646,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -655,7 +655,7 @@ const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 //  Pegá acá la URL del Apps Script (ver archivo "GuardarEnDrive.gs"
 //  y las instrucciones). Mientras esté vacío (''), los audios solo
 //  se descargan manualmente — el guardado en Drive queda apagado.
-const UPLOAD_URL = '';
+const UPLOAD_URL = 'https://script.google.com/a/macros/isf-argentina.org/s/AKfycbxPCOhDx1Eq40W9ZnUe80-86osxVnPQEaYDwnoT-FtftmJUpbhzAzmSikdn53V-jmaM/exec';
 
 // ══════════════════════════════════════════════════════════════
 //  CARPETA DE GOOGLE DRIVE donde se guardan las grabaciones.
@@ -1206,7 +1206,8 @@ async function uploadToDrive(rec) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ name: rec.name, captador: rec.capName, b64 })
     });
-    rec.up = 'ok';        // no-cors response is opaque; treat reaching server as sent
+    rec.up = 'ok';        // OJO: la respuesta no-cors es opaca; esto solo confirma
+                          // que el pedido salió, NO que el Apps Script lo guardó.
   } catch (_) {
     rec.up = 'err';
   }
@@ -1217,9 +1218,9 @@ function renderRecs() {
   if (!recs.length) return;
   $('c-recs-card').style.display = 'block';
   $('c-recs-list').innerHTML = recs.map((r, i) => {
-    const upTag = r.up === 'pending' ? '<div class="up-tag up-pending">⏳ Subiendo a Drive…</div>'
-               :  r.up === 'ok'      ? '<div class="up-tag up-ok">✓ Guardado en Drive</div>'
-               :  r.up === 'err'     ? '<div class="up-tag up-err">⚠ No se pudo subir (descargá manual)</div>'
+    const upTag = r.up === 'pending' ? '<div class="up-tag up-pending">⏳ Enviando a Drive…</div>'
+               :  r.up === 'ok'      ? '<div class="up-tag up-ok">↑ Enviado a Drive (verificá en la carpeta)</div>'
+               :  r.up === 'err'     ? '<div class="up-tag up-err">⚠ No se pudo enviar (descargá manual)</div>'
                :  '';
     const who = r.capName ? r.capName : `Grabación ${recs.length - i}`;
     return `
