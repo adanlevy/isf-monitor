@@ -649,7 +649,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.3.3';
+const APP_VERSION = '1.3.4';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -1033,7 +1033,10 @@ function spawnCoordPeer(code) {
 
   peer.on('disconnected', () => {
     if (peer && !peer.destroyed) {
-      setCS('wait', 'Reconectando...');
+      // Reconectar la señalización es tarea de fondo. Si el audio del captador/a
+      // sigue activo (un bloqueo corto cae el socket de señalización pero NO el
+      // WebRTC), no tocamos el estado: dejarlo en "conectado".
+      if (!coordConnected) setCS('wait', 'Reconectando...');
       try { peer.reconnect(); } catch (_) {}
     }
   });
