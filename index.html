@@ -347,7 +347,8 @@
     }
 
     /* Stop button armed (awaiting confirmation tap) */
-    #cap-stop-btn.btn-confirm {
+    #cap-stop-btn.btn-confirm,
+    #c-btn-disc.btn-confirm {
       background: var(--red); color: #fff; border-color: var(--red);
     }
 
@@ -449,7 +450,7 @@
       <div class="vol-label">Nivel de audio recibido</div>
       <div class="vol-track"><div class="vol-fill" id="c-vol-fill"></div></div>
     </div>
-    <button class="btn btn-ghost" id="c-btn-disc" onclick="discCaptador()" disabled style="margin-top:12px">
+    <button class="btn btn-ghost" id="c-btn-disc" onclick="confirmDiscCaptador()" disabled style="margin-top:12px">
       ✕ Cortar transmisión del captador/a
     </button>
   </div>
@@ -506,6 +507,7 @@
       class="cinput" id="cap-cin"
       type="text" placeholder="0000"
       maxlength="4" inputmode="numeric" autocomplete="off"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();capConnect();}"
     >
     <button class="btn btn-green" id="cap-btn" onclick="capConnect()">
       📡 Conectar y transmitir
@@ -622,6 +624,10 @@ let recStart   = 0;
 let recCapName = '';
 let timerID    = null;
 let stopArmed  = false;
+let coordStopArmed = false;   // confirmación de "cortar transmisión" del coordinador
+let coordStopTmr   = null;
+let coordRelinkTmr = null;    // re-chequeo de la señalización del coordinador tras un bloqueo
+let coordSpawnRetries = 0;    // reintentos de reclamar el mismo código tras un bloqueo
 let stopTmr    = null;
 let recCtx     = null;   // AudioContext used for capturing PCM while recording
 let recProc    = null;   // ScriptProcessorNode tapping the remote stream
@@ -649,7 +655,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.3.4';
+const APP_VERSION = '1.4.0';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -720,6 +726,9 @@ function teardown() {
   clearTimeout(resetTmr); resetTmr = null;
   clearTimeout(coordDropTmr); coordDropTmr = null;
   clearTimeout(recAutoStopTmr); recAutoStopTmr = null;
+  clearTimeout(coordRelinkTmr); coordRelinkTmr = null;
+  resetCoordStopBtn();
+  coordSpawnRetries = 0;
   releaseWakeLock();
   coordConnected = false;
   activeCoordCall = null;
@@ -892,15 +901,55 @@ document.addEventListener('visibilitychange', () => {
   // Auto-recuperar la conexión al volver de un bloqueo/segundo plano, para que
   // NO haya que reestablecer a mano de ambos lados.
   if (onCoord) {
-    // Coordinador/a: volver a registrar el mismo código en el servidor
-    if (!peer || peer.destroyed) { if (coordCode) spawnCoordPeer(coordCode); }
-    else if (peer.disconnected)  { try { peer.reconnect(); } catch (_) {} }
+    const respawned = ensureCoordLink();
+    // Si el audio parecía vivo, justo al desbloquear el estado ICE puede leerse
+    // "connected" por inercia aunque ya esté muerto. Confirmamos a los 2,5 s.
+    // (Si ya re-registramos, no hace falta re-chequear y evitamos un bucle.)
+    if (!respawned) {
+      clearTimeout(coordRelinkTmr);
+      coordRelinkTmr = setTimeout(ensureCoordLink, 2500);
+    }
   } else if (onDonor && peer && !peer.destroyed) {
     // Captador/a: reconectar la señalización y volver a llamar si se cortó
     if (peer.disconnected) { try { peer.reconnect(); } catch (_) {} }
     if (!capLive) scheduleReconnect();
+    repaintSlides();   // forzar repintado de la presentación (a veces queda en blanco al volver)
   }
 });
+
+// Asegura que la señalización del coordinador esté viva tras un bloqueo, SIN
+// esperar los ~5 s que tarda PeerJS en detectar el socket muerto. Si el audio
+// está realmente vivo (ICE connected), no toca nada; si no, re-registra el
+// mismo código de inmediato.
+// Devuelve true si re-registró el peer (para no programar un re-chequeo extra).
+function ensureCoordLink() {
+  if (!$('s-coord').classList.contains('on')) return false;
+  if (!peer || peer.destroyed) { if (coordCode) spawnCoordPeer(coordCode, true); return true; }
+  const st = activeCoordCall?.peerConnection?.iceConnectionState;
+  const mediaAlive = (st === 'connected' || st === 'completed');
+  if (mediaAlive) {
+    if (peer.disconnected) { try { peer.reconnect(); } catch (_) {} }   // solo señalización
+    return false;
+  }
+  // Sin audio confirmado: re-registrar el código YA (no esperar el heartbeat)
+  try { peer.destroy(); } catch (_) {}
+  peer = null;
+  coordConnected = false;
+  if (coordCode) spawnCoordPeer(coordCode, true);
+  return true;
+}
+
+// Fuerza un repintado de la presentación embebida. Tras un bloqueo/reconexión,
+// el iframe a veces queda en blanco hasta entrar/salir de pantalla completa;
+// alternar display dispara un relayout y lo vuelve a pintar sin recargarlo.
+function repaintSlides() {
+  const f = $('slides-frame');
+  if (f && f.style.display !== 'none') {
+    f.style.display = 'none';
+    void f.offsetHeight;          // forzar reflow
+    f.style.display = 'block';
+  }
+}
 
 /* ═══════════════════════════════════════════════
    MEDIA SESSION (coordinador)
@@ -950,10 +999,11 @@ function initCoord() {
   const code = String(1000 + Math.floor(Math.random() * 9000));
   $('c-code').textContent = code;
   setCS('init', 'Iniciando...');
-  spawnCoordPeer(code);
+  coordSpawnRetries = 0;
+  spawnCoordPeer(code, false);
 }
 
-function spawnCoordPeer(code) {
+function spawnCoordPeer(code, reclaim) {
   coordCode = code;   // recordarlo para poder re-crear el peer al volver de un bloqueo
   peer = new Peer('isfa' + code, {
     config: { iceServers: ICE_SERVERS }
@@ -963,7 +1013,10 @@ function spawnCoordPeer(code) {
   // estado si ya hay un captador/a conectado: tras un reconnect, PeerJS vuelve
   // a emitir 'open' y, si la llamada ya había reenganchado, no queremos
   // degradar el texto a "Esperando" mientras el audio sigue llegando.
-  peer.on('open', () => { if (!coordConnected) setCS('wait', 'Esperando al captador/a...'); });
+  peer.on('open', () => {
+    coordSpawnRetries = 0;
+    if (!coordConnected) setCS('wait', 'Esperando al captador/a...');
+  });
 
   // Canal de datos con el captador/a. Sirve en los dos sentidos:
   //  • el captador/a manda 'bye' al tocar "Detener" → detección instantánea
@@ -975,14 +1028,24 @@ function spawnCoordPeer(code) {
 
   peer.on('error', err => {
     if (err.type === 'unavailable-id') {
-      const c2 = String(1000 + Math.floor(Math.random() * 9000));
-      $('c-code').textContent = c2;
-      peer.destroy();
-      spawnCoordPeer(c2);
+      // Al reclamar el mismo código tras un bloqueo, el ID viejo puede tardar un
+      // instante en liberarse: reintentamos el MISMO código antes de cambiarlo.
+      if (reclaim && coordSpawnRetries < 8) {
+        coordSpawnRetries++;
+        try { peer.destroy(); } catch (_) {}
+        setTimeout(() => spawnCoordPeer(code, true), 500);
+      } else {
+        const c2 = String(1000 + Math.floor(Math.random() * 9000));
+        $('c-code').textContent = c2;
+        try { peer.destroy(); } catch (_) {}
+        spawnCoordPeer(c2, false);
+      }
     } else if (err.type === 'network' || err.type === 'server-error') {
-      setCS('err', 'Sin red. Verificá WiFi o datos móviles.');
+      // No alarmar con "Sin red" si el audio sigue llegando (bloqueo corto que
+      // cae la señalización pero no el WebRTC).
+      if (!coordConnected) setCS('err', 'Sin red. Verificá WiFi o datos móviles.');
     } else {
-      setCS('err', 'Error (' + err.type + '). Recargá la página.');
+      if (!coordConnected) setCS('err', 'Error (' + err.type + '). Recargá la página.');
     }
   });
 
@@ -1086,6 +1149,7 @@ function coordDisconnected() {
 
   $('c-vol-wrap').style.display = 'none';
   $('c-btn-disc').disabled = true;
+  resetCoordStopBtn();
   rstream = null;
   stopVol();
 }
@@ -1093,6 +1157,28 @@ function coordDisconnected() {
 // El coordinador/a corta la transmisión: le avisa al captador/a por el canal
 // de datos (su micrófono se apaga y vuelve a la pantalla de inicio) y cierra
 // su propio lado. La sesión sigue viva para recibir a otro captador/a.
+// Confirmación de dos toques, igual que el "Detener" del captador, para que un
+// toque accidental no corte la transmisión.
+function confirmDiscCaptador() {
+  const b = $('c-btn-disc');
+  if (coordStopArmed) {
+    resetCoordStopBtn();
+    discCaptador();
+    return;
+  }
+  coordStopArmed = true;
+  b.textContent = '¿Seguro? Tocá de nuevo';
+  b.classList.add('btn-confirm');
+  coordStopTmr = setTimeout(resetCoordStopBtn, 3000);
+}
+
+function resetCoordStopBtn() {
+  coordStopArmed = false;
+  clearTimeout(coordStopTmr);
+  const b = $('c-btn-disc');
+  if (b) { b.textContent = '✕ Cortar transmisión del captador/a'; b.classList.remove('btn-confirm'); }
+}
+
 function discCaptador() {
   try { coordDataConn?.send('stop'); } catch (_) {}
   if (recording) stopRec();              // finalizar la grabación en curso
@@ -1106,6 +1192,7 @@ function discCaptador() {
   $('c-vol-wrap').style.display = 'none';
   $('c-btn-start').disabled = true;
   $('c-btn-disc').disabled  = true;
+  resetCoordStopBtn();
   setCS('wait', 'Transmisión finalizada. Esperando otro captador/a…');
 }
 
@@ -1311,7 +1398,14 @@ function fmtDur(s) {
 /* ═══════════════════════════════════════════════
    CAPTADOR
 ═══════════════════════════════════════════════ */
-function initCap() { go('s-cap'); }
+function initCap() {
+  go('s-cap');
+  // Ofrecer el último código usado para facilitar la reconexión
+  try {
+    const last = localStorage.getItem('isf-cap-code');
+    if (last && !$('cap-cin').value) $('cap-cin').value = last;
+  } catch (_) {}
+}
 
 async function capConnect() {
   const cinput = $('cap-cin');
@@ -1326,6 +1420,7 @@ async function capConnect() {
   // Request fullscreen NOW, while we still have the tap gesture
   goFullscreen();
   capCode = code;
+  try { localStorage.setItem('isf-cap-code', code); } catch (_) {}   // recordar para reconectar fácil
   reconnTries = 0;
   everConnected = false;
   capLive = false;
@@ -1418,6 +1513,7 @@ function placeCall() {
     clearTimeout(t); clearTimeout(dropTmr);
     setSheetStatus('ok', '📡 Transmitiendo en vivo...');
     startVol(lstream, 'sheet-vol-fill', 'sheet-vol-wrap');
+    repaintSlides();   // por si la presentación quedó en blanco durante el corte
   };
 
   // Reintenta este intento de llamada (una sola vez por llamada).
