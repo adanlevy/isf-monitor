@@ -16,6 +16,7 @@ La aplicación tiene dos modos que corren en el mismo archivo HTML:
 - Convierte cada grabación a MP3 en el propio navegador y la ofrece para descargar.
 - Opcionalmente sube el MP3 a una carpeta de Google Drive de la organización de forma automática.
 - Ofrece un botón de acceso directo a la carpeta de Google Drive donde se guardan las grabaciones.
+- Puede cortar la transmisión del captador/a de forma remota desde un botón (le apaga el micrófono y lo devuelve a la pantalla de inicio), manteniendo la sesión viva para otro captador/a.
 - Registra el nombre del captador/a en el nombre del archivo para facilitar el seguimiento.
 - Detecta cuando el captador/a se desconecta (de forma casi instantánea) y actualiza el estado visualmente.
 - Si la desconexión ocurre durante una grabación, **no la corta**: la mantiene esperando la reconexión y solo la detiene automáticamente 90 segundos después. El coordinador/a también puede detenerla a mano en cualquier momento.
@@ -131,7 +132,7 @@ const ICE_SERVERS = [ ... ];
 // Versión incremental de la app. Subir este número en cada cambio;
 // se muestra en el pie de cada pantalla para confirmar que estás
 // usando la última versión publicada.
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.2';
 ```
 
 ---
@@ -173,9 +174,11 @@ La transmisión usa el codec Opus que WebRTC negocia por defecto, optimizado par
 
 ## Limitaciones conocidas
 
-**Bloqueo de pantalla:** mientras el captador/a está transmitiendo, la app pide un *Screen Wake Lock* (`navigator.wakeLock`) para que la tablet **no se bloquee sola** aunque nadie toque la pantalla, igual que hace una app de video. El lock se libera al detener la transmisión y se vuelve a pedir automáticamente cuando la pestaña regresa a primer plano. Requiere HTTPS y un navegador compatible (Chrome para Android, Safari iOS 16.4+).
+**Bloqueo de pantalla:** mientras hay una sesión activa —el captador/a transmitiendo en la vista de donante, **o** el coordinador/a escuchando/grabando— la app pide un *Screen Wake Lock* (`navigator.wakeLock`) para que el dispositivo **no se bloquee solo** aunque nadie toque la pantalla, igual que hace una app de video. El lock se libera al detener la sesión y se vuelve a pedir automáticamente cuando la pestaña regresa a primer plano. Requiere HTTPS y un navegador compatible (Chrome para Android, Safari iOS 16.4+).
 
-**Transmisión en segundo plano:** cuando la app está en primer plano en Chrome para Android, el micrófono se mantiene activo. Si el usuario minimiza Chrome o cambia a otra app nativa (por ejemplo, la app de Google Slides), el sistema operativo puede suspender el proceso y cortar la transmisión. Esta es una limitación del navegador: solo las apps nativas Android pueden declarar un *foreground service* de audio que el sistema garantiza que no interrumpirá. Por esta razón, la presentación y el formulario se embeben dentro de la propia app en lugar de abrirse en apps externas. (El Wake Lock evita el bloqueo automático de pantalla, pero no impide que el SO suspenda la app si pasa a segundo plano.)
+**Transmisión / escucha en segundo plano:** cuando la app está en primer plano, el micrófono (captador) y el audio recibido (coordinador) se mantienen activos. Si el usuario **bloquea manualmente** el dispositivo (botón de encendido) o cambia a otra app, el sistema operativo puede suspender el proceso del navegador y cortar la transmisión o la grabación. Esta es una limitación del navegador: solo las apps nativas pueden declarar un *foreground service* de audio que el sistema garantiza no interrumpir. El Wake Lock evita el **bloqueo automático por inactividad** (el caso más común), pero no impide la suspensión si el dispositivo se bloquea a mano o la app pasa a segundo plano. Por eso la presentación y el formulario se embeben dentro de la propia app en lugar de abrirse en apps externas.
+
+**Indicador de micrófono del sistema:** mientras el micrófono está activo, el navegador muestra un ícono de grabación en la pestaña y Android/iPadOS muestran un punto (verde/naranja) en la esquina de la pantalla. Es una **medida de privacidad del sistema operativo que una web no puede ocultar ni desactivar**; desaparece por sí solo unos segundos después de que el micrófono se libera. La app corta el micrófono de inmediato al desconectar (`MediaStreamTrack.stop()` + cierre del `AudioContext`) para que el indicador se apague lo antes posible.
 
 **Reconexión no automática en el lado del coordinador:** si el celular del coordinador pierde conectividad, la instancia de `Peer` se destruye. Al recuperar la red, el coordinador debe recargar la app manualmente para obtener un nuevo código y que el captador/a se reconecte.
 
