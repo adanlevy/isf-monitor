@@ -655,7 +655,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -901,14 +901,11 @@ document.addEventListener('visibilitychange', () => {
   // Auto-recuperar la conexión al volver de un bloqueo/segundo plano, para que
   // NO haya que reestablecer a mano de ambos lados.
   if (onCoord) {
-    const respawned = ensureCoordLink();
-    // Si el audio parecía vivo, justo al desbloquear el estado ICE puede leerse
-    // "connected" por inercia aunque ya esté muerto. Confirmamos a los 2,5 s.
-    // (Si ya re-registramos, no hace falta re-chequear y evitamos un bucle.)
-    if (!respawned) {
-      clearTimeout(coordRelinkTmr);
-      coordRelinkTmr = setTimeout(ensureCoordLink, 2500);
-    }
+    ensureCoordLink();
+    // Justo al desbloquear, el estado ICE puede leerse "connected" por inercia
+    // aunque ya esté muerto. Reconfirmamos a los 2,5 s.
+    clearTimeout(coordRelinkTmr);
+    coordRelinkTmr = setTimeout(ensureCoordLink, 2500);
   } else if (onDonor && peer && !peer.destroyed) {
     // Captador/a: reconectar la señalización y volver a llamar si se cortó
     if (peer.disconnected) { try { peer.reconnect(); } catch (_) {} }
@@ -917,26 +914,29 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-// Asegura que la señalización del coordinador esté viva tras un bloqueo, SIN
-// esperar los ~5 s que tarda PeerJS en detectar el socket muerto. Si el audio
-// está realmente vivo (ICE connected), no toca nada; si no, re-registra el
-// mismo código de inmediato.
-// Devuelve true si re-registró el peer (para no programar un re-chequeo extra).
+// Reengancha la señalización del coordinador tras un bloqueo, SIN esperar los
+// ~5 s que tarda PeerJS en detectar el socket muerto. Clave: usa peer.reconnect()
+// (reusa el MISMO id y token), así el servidor lo reconoce como el mismo peer y
+// CONSERVA el código, sin importar cuánto duró el bloqueo. Nunca recrea el Peer
+// (eso generaría un token nuevo → choque de id → cambio de código).
 function ensureCoordLink() {
-  if (!$('s-coord').classList.contains('on')) return false;
-  if (!peer || peer.destroyed) { if (coordCode) spawnCoordPeer(coordCode, true); return true; }
+  if (!$('s-coord').classList.contains('on')) return;
+  // Solo si el Peer se perdió por completo (caso raro) lo recreamos con el mismo código.
+  if (!peer || peer.destroyed) { if (coordCode) spawnCoordPeer(coordCode, true); return; }
   const st = activeCoordCall?.peerConnection?.iceConnectionState;
   const mediaAlive = (st === 'connected' || st === 'completed');
   if (mediaAlive) {
-    if (peer.disconnected) { try { peer.reconnect(); } catch (_) {} }   // solo señalización
-    return false;
+    if (peer.disconnected) { try { peer.reconnect(); } catch (_) {} }   // solo recomponer señalización
+    return;
   }
-  // Sin audio confirmado: re-registrar el código YA (no esperar el heartbeat)
-  try { peer.destroy(); } catch (_) {}
-  peer = null;
-  coordConnected = false;
-  if (coordCode) spawnCoordPeer(coordCode, true);
-  return true;
+  // Sin audio confirmado: forzar el reenganche YA, conservando el código.
+  try {
+    if (peer.disconnected) {
+      peer.reconnect();           // reclama el mismo id/token
+    } else {
+      peer.disconnect();          // dispara 'disconnected' → su handler hace reconnect()
+    }
+  } catch (_) {}
 }
 
 // Fuerza un repintado de la presentación embebida. Tras un bloqueo/reconexión,
@@ -1099,7 +1099,7 @@ function spawnCoordPeer(code, reclaim) {
       // Reconectar la señalización es tarea de fondo. Si el audio del captador/a
       // sigue activo (un bloqueo corto cae el socket de señalización pero NO el
       // WebRTC), no tocamos el estado: dejarlo en "conectado".
-      if (!coordConnected) setCS('wait', 'Reconectando...');
+      if (!coordConnected) setCS('wait', 'Esperando al captador/a...');
       try { peer.reconnect(); } catch (_) {}
     }
   });
@@ -1137,13 +1137,13 @@ function coordDisconnected() {
     // No cortamos la grabación: esperamos a que el captador/a vuelva.
     // La detención automática recién se dispara 90 s después de la
     // desconexión. El coordinador/a siempre puede detenerla a mano antes.
-    setCS('wait', 'Captador/a desconectado/a · seguís grabando (auto-stop en 90 s)…');
+    setCS('wait', 'Esperando al captador/a...');
     clearTimeout(recAutoStopTmr);
     recAutoStopTmr = setTimeout(() => {
       if (!coordConnected && recording) stopRec();
     }, 90000);
   } else {
-    setCS('wait', 'Captador/a desconectado/a. Esperando reconexión…');
+    setCS('wait', 'Esperando al captador/a...');
     $('c-btn-start').disabled = true;
   }
 
@@ -1193,7 +1193,7 @@ function discCaptador() {
   $('c-btn-start').disabled = true;
   $('c-btn-disc').disabled  = true;
   resetCoordStopBtn();
-  setCS('wait', 'Transmisión finalizada. Esperando otro captador/a…');
+  setCS('wait', 'Esperando al captador/a...');
 }
 
 function setCS(type, msg) {
