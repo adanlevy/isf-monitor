@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta id="viewport-meta" name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>ISF Argentina · Monitor de Captación</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.4.7/peerjs.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
@@ -655,7 +655,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.4.2';
+const APP_VERSION = '1.5.0';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -711,6 +711,19 @@ function go(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('on'));
   $(id).classList.add('on');
   window.scrollTo(0, 0);
+  // Habilitar el zoom (pinch) solo en la vista del donante, para poder
+  // acercar la presentación. En el resto se mantiene bloqueado (evita el
+  // auto-zoom al tocar inputs y zooms accidentales en la UI).
+  setZoom(id === 's-donor');
+}
+
+// Alterna si se permite el pinch-to-zoom, cambiando el <meta viewport>.
+function setZoom(on) {
+  const m = $('viewport-meta');
+  if (!m) return;
+  m.setAttribute('content', on
+    ? 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes'
+    : 'width=device-width, initial-scale=1.0, maximum-scale=1.0');
 }
 
 function goBack() {
