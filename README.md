@@ -134,7 +134,7 @@ const ICE_SERVERS = [ ... ];
 // Versión incremental de la app. Subir este número en cada cambio;
 // se muestra en el pie de cada pantalla para confirmar que estás
 // usando la última versión publicada.
-const APP_VERSION = '1.5.1';
+const APP_VERSION = '1.6.0';
 ```
 
 ---
