@@ -544,6 +544,10 @@
           allowfullscreen
           style="display:none; position:absolute; inset:0; width:100%; height:100%; border:none; background:#0A1929;"></iframe>
 
+  <!-- Capa de gestos para el zoom propio de la presentación (doble tap + arrastre).
+       z-index 10: debajo de los botones (···, 📋 = z-index 20), encima del iframe. -->
+  <div id="slides-zoom" style="display:none; position:absolute; inset:0; z-index:10; touch-action:none;"></div>
+
   <!-- Branded fallback (shown when no slides URL is set) -->
   <div class="donor-body" id="donor-branded">
     <div class="donor-emblem">🛠</div>
@@ -655,7 +659,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.5.1';
+const APP_VERSION = '1.6.0';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -758,6 +762,8 @@ function teardown() {
   $('form-overlay').classList.remove('open');
   $('form-frame').src = 'about:blank';
   $('slides-frame').src = 'about:blank';
+  $('slides-zoom').style.display = 'none';
+  resetSlidesZoom();
   formLoaded = false;
 }
 
@@ -834,11 +840,90 @@ function loadSlides() {
     if (frame.src !== SLIDES_URL) frame.src = SLIDES_URL;
     frame.style.display   = 'block';
     branded.style.display = 'none';
+    $('slides-zoom').style.display = 'block';   // habilitar gestos de zoom
   } else {
     frame.style.display   = 'none';
     branded.style.display = 'flex';
+    $('slides-zoom').style.display = 'none';
   }
+  resetSlidesZoom();
 }
+
+/* ═══════════════════════════════════════════════
+   ZOOM PROPIO DE LA PRESENTACIÓN
+   El pinch nativo no funciona sobre el iframe de Slides (lo capturan ellos) ni
+   en pantalla completa. Implementamos zoom con doble tap (acercar/alejar) y
+   arrastre para desplazar, aplicando una transformación CSS al iframe.
+═══════════════════════════════════════════════ */
+let zScale = 1, zTX = 0, zTY = 0;          // escala y desplazamiento actuales
+let zTapTime = 0, zTapX = 0, zTapY = 0;    // para detectar doble tap
+let zStartX = 0, zStartY = 0, zBaseTX = 0, zBaseTY = 0, zMoved = false;
+const ZOOM_LEVEL = 2.5;
+
+function applySlidesZoom() {
+  const f = $('slides-frame');
+  f.style.transformOrigin = '0 0';
+  f.style.transform = `translate(${zTX}px, ${zTY}px) scale(${zScale})`;
+}
+
+function resetSlidesZoom() {
+  zScale = 1; zTX = 0; zTY = 0;
+  applySlidesZoom();
+}
+
+function clampPan() {
+  const w = window.innerWidth, h = window.innerHeight;
+  zTX = Math.min(0, Math.max(w - w * zScale, zTX));
+  zTY = Math.min(0, Math.max(h - h * zScale, zTY));
+}
+
+function toggleZoomAt(x, y) {
+  if (zScale === 1) {
+    zScale = ZOOM_LEVEL;
+    zTX = x * (1 - zScale);   // mantener el punto tocado bajo el dedo (origen 0,0)
+    zTY = y * (1 - zScale);
+    clampPan();
+  } else {
+    zScale = 1; zTX = 0; zTY = 0;
+  }
+  applySlidesZoom();
+}
+
+(function initSlidesZoom() {
+  const ov = $('slides-zoom');
+  if (!ov) return;
+  ov.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) {
+      zStartX = e.touches[0].clientX; zStartY = e.touches[0].clientY;
+      zBaseTX = zTX; zBaseTY = zTY; zMoved = false;
+    }
+  }, { passive: false });
+
+  ov.addEventListener('touchmove', e => {
+    if (e.touches.length !== 1) return;
+    const dx = e.touches[0].clientX - zStartX, dy = e.touches[0].clientY - zStartY;
+    if (Math.abs(dx) > 6 || Math.abs(dy) > 6) zMoved = true;   // fue arrastre, no tap
+    if (zScale > 1) {
+      e.preventDefault();   // desplazar la diapositiva ampliada
+      zTX = zBaseTX + dx; zTY = zBaseTY + dy;
+      clampPan();
+      applySlidesZoom();
+    }
+  }, { passive: false });
+
+  ov.addEventListener('touchend', e => {
+    if (zMoved) { zMoved = false; return; }     // fue un arrastre, no un tap
+    const t = (e.changedTouches && e.changedTouches[0]) || {};
+    const x = t.clientX || 0, y = t.clientY || 0;
+    const now = Date.now();
+    if (now - zTapTime < 300 && Math.abs(x - zTapX) < 40 && Math.abs(y - zTapY) < 40) {
+      zTapTime = 0;            // doble tap detectado
+      toggleZoomAt(x, y);
+    } else {
+      zTapTime = now; zTapX = x; zTapY = y;
+    }
+  }, { passive: false });
+})();
 
 function isFullscreen() {
   return !!(document.fullscreenElement || document.webkitFullscreenElement);
