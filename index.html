@@ -655,7 +655,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.4.1';
+const APP_VERSION = '1.4.2';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -1463,12 +1463,7 @@ async function capConnect() {
 
   peer.on('open', () => {
     setSheetStatus('wait', 'Llamando al coordinador...');
-    // Canal de datos: avisa la desconexión al instante y recibe la orden
-    // del coordinador/a para cortar la transmisión ('stop').
-    try {
-      dataConn = peer.connect('isfa' + capCode);
-      dataConn.on('data', d => { if (d === 'stop') capDisconnect(); });
-    } catch (_) {}
+    ensureDataConn();   // canal de datos para 'bye' (al detener) y 'stop' (corte del coordinador)
     placeCall();
   });
 
@@ -1496,21 +1491,42 @@ async function capConnect() {
   });
 }
 
+// Abre (o re-abre) el canal de datos hacia el coordinador. Tras un bloqueo
+// prolongado, la llamada de audio se reconecta pero el canal de datos quedó
+// muerto; sin re-abrirlo, el 'stop' del coordinador (cortar transmisión) no
+// llegaría. Por eso se re-asegura en cada reconexión.
+function ensureDataConn() {
+  if (!peer || peer.destroyed || !capCode) return;
+  if (dataConn && dataConn.open) return;     // ya hay uno vivo
+  try { dataConn?.close(); } catch (_) {}
+  try {
+    dataConn = peer.connect('isfa' + capCode);
+    dataConn.on('data', d => { if (d === 'stop') capDisconnect(); });
+  } catch (_) {}
+}
+
 // Places (or re-places) the call to the coordinator and watches the
 // connection. If the media path drops (common on mobile), it retries.
 function placeCall() {
   if (!peer || peer.destroyed || !lstream) return;
+  ensureDataConn();   // re-abrir el canal de datos si murió (reconexión)
 
   const call = peer.call('isfa' + capCode, lstream);
   let live = false, retried = false, dropTmr = null;
 
   const markLive = () => {
     if (live) return;
+    const isReconnect = everConnected;   // ya habíamos conectado antes → es reconexión
     live = true;
     everConnected = true;
     capLive = true;
     reconnTries = 0;
     clearTimeout(t); clearTimeout(dropTmr);
+    // En una reconexión, el canal de datos viejo quedó muerto: forzamos uno nuevo
+    // (aunque su flag .open haya quedado "pegado") para que el 'stop' del
+    // coordinador vuelva a funcionar.
+    if (isReconnect) { try { dataConn?.close(); } catch (_) {} dataConn = null; }
+    ensureDataConn();
     setSheetStatus('ok', '📡 Transmitiendo en vivo...');
     startVol(lstream, 'sheet-vol-fill', 'sheet-vol-wrap');
     repaintSlides();   // por si la presentación quedó en blanco durante el corte
