@@ -268,6 +268,23 @@
     .donor-form-btn:hover  { background: rgba(13,27,42,.92); }
     .donor-form-btn:active { transform: scale(.93); }
 
+    /* Zoom button — bottom-right, same pill style */
+    .donor-zoom-btn {
+      position: absolute; bottom: 16px; right: 16px;
+      background: rgba(13,27,42,.72); color: #fff;
+      border: 1.5px solid rgba(255,255,255,.85);
+      border-radius: 11px;
+      width: 44px; height: 40px;
+      font-size: 18px; font-weight: 700; cursor: pointer;
+      display: none; align-items: center; justify-content: center;
+      line-height: 1;
+      box-shadow: 0 2px 12px rgba(0,0,0,.45);
+      transition: background .15s, transform .1s;
+      z-index: 20;
+    }
+    .donor-zoom-btn:hover  { background: rgba(13,27,42,.92); }
+    .donor-zoom-btn:active { transform: scale(.93); }
+
     .donor-body {
       display: flex; flex-direction: column;
       align-items: center; text-align: center;
@@ -544,9 +561,13 @@
           allowfullscreen
           style="display:none; position:absolute; inset:0; width:100%; height:100%; border:none; background:#0A1929;"></iframe>
 
-  <!-- Capa de gestos para el zoom propio de la presentación (doble tap + arrastre).
-       z-index 10: debajo de los botones (···, 📋 = z-index 20), encima del iframe. -->
-  <div id="slides-zoom" style="display:none; position:absolute; inset:0; z-index:10; touch-action:none;"></div>
+  <!-- Capa de gestos para el zoom propio de la presentación (arrastre + doble tap para volver).
+       z-index 10: debajo de los botones (···, 📋 = z-index 20), encima del iframe.
+       Solo captura toques cuando está ampliado; a tamaño normal queda libre para pasar diapositivas. -->
+  <div id="slides-zoom" style="display:none; position:absolute; inset:0; z-index:10; touch-action:none; pointer-events:none;"></div>
+
+  <!-- Botón para acercar / volver al tamaño normal -->
+  <button class="donor-zoom-btn" id="zoom-btn" onclick="onZoomBtn()" title="Acercar">🔍</button>
 
   <!-- Branded fallback (shown when no slides URL is set) -->
   <div class="donor-body" id="donor-branded">
@@ -659,7 +680,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.6.1';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -763,6 +784,7 @@ function teardown() {
   $('form-frame').src = 'about:blank';
   $('slides-frame').src = 'about:blank';
   $('slides-zoom').style.display = 'none';
+  $('zoom-btn').style.display    = 'none';
   resetSlidesZoom();
   formLoaded = false;
 }
@@ -841,10 +863,12 @@ function loadSlides() {
     frame.style.display   = 'block';
     branded.style.display = 'none';
     $('slides-zoom').style.display = 'block';   // habilitar gestos de zoom
+    $('zoom-btn').style.display    = 'flex';
   } else {
     frame.style.display   = 'none';
     branded.style.display = 'flex';
     $('slides-zoom').style.display = 'none';
+    $('zoom-btn').style.display    = 'none';
   }
   resetSlidesZoom();
 }
@@ -864,6 +888,21 @@ function applySlidesZoom() {
   const f = $('slides-frame');
   f.style.transformOrigin = '0 0';
   f.style.transform = `translate(${zTX}px, ${zTY}px) scale(${zScale})`;
+  // La capa solo captura cuando está ampliado; a 1x queda libre para pasar diapositivas.
+  const ov = $('slides-zoom');
+  if (ov) ov.style.pointerEvents = (zScale > 1) ? 'auto' : 'none';
+  const btn = $('zoom-btn');
+  if (btn) {
+    btn.textContent = (zScale > 1) ? '1×' : '🔍';
+    btn.title       = (zScale > 1) ? 'Volver al tamaño normal' : 'Acercar';
+  }
+}
+
+// El doble tap para ENTRAR rompería el pasaje de diapositivas (obligaría a capturar
+// a 1x), así que se acerca con el botón. Ya ampliado, doble tap o botón vuelven a 1x.
+function onZoomBtn() {
+  if (zScale === 1) toggleZoomAt(window.innerWidth / 2, window.innerHeight / 2);
+  else              toggleZoomAt(0, 0);   // a >1x, toggleZoomAt resetea
 }
 
 function resetSlidesZoom() {
