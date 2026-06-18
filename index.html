@@ -680,7 +680,7 @@ let activeCoordCall = null;  // llamada vigente en el coordinador (ignora evento
 let coordDataConn   = null;  // canal de datos hacia el captador (para cortarle la transmisión)
 
 // Versión incremental de la app. Subir este número en cada cambio.
-const APP_VERSION = '1.6.1';
+const APP_VERSION = '1.6.2';
 
 const FORM_URL = 'https://isf-argentina.org/formularios/donar';
 
@@ -1420,9 +1420,10 @@ async function stopRec() {
   await saveRec(pcm, sr, dur);
 }
 
-function slug(s) {
-  return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-    .replace(/[^a-zA-Z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40) || 'sin-nombre';
+// Limpia el nombre del captador para usarlo en el archivo: mantiene letras,
+// acentos y espacios; solo saca caracteres que rompen nombres de archivo.
+function cleanName(s) {
+  return ((s || '').replace(/[\/\\:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, 60) || 'Sin nombre';
 }
 
 // Float32 PCM → MP3 (mono, 64 kbps) — plays everywhere on Windows, stays small
@@ -1447,8 +1448,14 @@ function pcmToMp3(pcm, sr) {
 async function saveRec(pcm, sr, dur) {
   const n    = new Date();
   const pad  = x => String(x).padStart(2,'0');
-  const stamp = `${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}h${pad(n.getMinutes())}`;
-  const name = `ISF-${slug(recCapName)}-${stamp}.mp3`;
+  // Formato: "CVP YYYYMMDD HH:MMam - Nombre Captador - 1m10s.mp3"
+  const date   = `${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}`;
+  const h12    = (n.getHours() % 12) || 12;
+  const ampm   = n.getHours() < 12 ? 'am' : 'pm';
+  const time   = `${h12}:${pad(n.getMinutes())}${ampm}`;
+  const mins   = Math.floor(dur / 60), secs = dur % 60;
+  const durTxt = mins > 0 ? `${mins}m${pad(secs)}s` : `${secs}s`;
+  const name   = `CVP ${date} ${time} - ${cleanName(recCapName)} - ${durTxt}.mp3`;
 
   $('c-conv-note').style.display = 'block';
   // Yield so the "Convirtiendo…" note paints before the encode blocks the thread
